@@ -1,0 +1,17 @@
+name = "switchbot-temperature-logger"
+main = "src/index.js"
+compatibility_date = "2026-05-17"
+
+# Cron Triggers: every 10 minutes (within the 5–15 min target range).
+[triggers]
+crons = ["*/10 * * * *"]
+
+# Public vars (non-secret). DEVICES is a JSON string of [{deviceId, room}, ...].
+[vars]
+DEVICES = "[]"
+
+# Secrets — set via `wrangler secret put <NAME>`. Do NOT commit real values.
+#   wrangler secret put SWITCHBOT_API_TOKEN
+#   wrangler secret put SWITCHBOT_API_SECRET
+#   wrangler secret put TURSO_DATABASE_URL
+#   wrangler secret put TURSO_AUTH_TOKEN
