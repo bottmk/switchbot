@@ -1,5 +1,4 @@
 SWITCHBOT_API_TOKEN=replace-with-your-token
 SWITCHBOT_API_SECRET=replace-with-your-secret
-TURSO_DATABASE_URL=https://your-db.turso.io
-TURSO_AUTH_TOKEN=replace-with-your-token
+SWITCHBOT_WEBHOOK_SECRET=replace-with-a-random-string-32chars-or-more
 DEVICES=[{"deviceId":"XX:XX:XX:XX:XX:XX","room":"living"}]

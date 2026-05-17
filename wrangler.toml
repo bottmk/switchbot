@@ -2,7 +2,7 @@ name = "switchbot-temperature-logger"
 main = "src/index.js"
 compatibility_date = "2026-05-17"
 
-# Cron Triggers: every 10 minutes (within the 5–15 min target range).
+# Cron Triggers: every 10 minutes (primary periodic sampling).
 [triggers]
 crons = ["*/10 * * * *"]
 
@@ -10,8 +10,16 @@ crons = ["*/10 * * * *"]
 [vars]
 DEVICES = "[]"
 
+# D1 database binding. First create the DB and paste the returned ID:
+#   wrangler d1 create switchbot-logs
+[[d1_databases]]
+binding = "DB"
+database_name = "switchbot-logs"
+database_id = "REPLACE_WITH_ACTUAL_ID"
+
 # Secrets — set via `wrangler secret put <NAME>`. Do NOT commit real values.
 #   wrangler secret put SWITCHBOT_API_TOKEN
 #   wrangler secret put SWITCHBOT_API_SECRET
-#   wrangler secret put TURSO_DATABASE_URL
-#   wrangler secret put TURSO_AUTH_TOKEN
+#   wrangler secret put SWITCHBOT_WEBHOOK_SECRET
+# The webhook URL registered with SwitchBot must be:
+#   https://<your-worker>.workers.dev/webhook/<SWITCHBOT_WEBHOOK_SECRET>

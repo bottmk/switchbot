@@ -6,7 +6,8 @@ CREATE TABLE IF NOT EXISTS temperature_logs (
   humidity REAL,
   absolute_humidity REAL,
   room TEXT,
-  battery INTEGER
+  battery INTEGER,
+  source TEXT NOT NULL DEFAULT 'cron'
 );
 CREATE INDEX IF NOT EXISTS idx_temp_logs_device_time
   ON temperature_logs(device_id, timestamp);
