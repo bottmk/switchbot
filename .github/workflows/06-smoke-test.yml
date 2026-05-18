@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 jobs:
   smoke:
@@ -104,19 +105,10 @@ jobs:
           with open('/tmp/smoke.log','w') as f: f.write(t)
           PY
 
-      - name: Post smoke result to GitHub Issue
+      - name: Post smoke result to tracker PR (or fallback Issue)
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            let body = '(no log)';
-            try { body = fs.readFileSync('/tmp/smoke.log','utf8'); } catch {}
-            const MAX = 60000;
-            if (body.length > MAX) body = body.slice(0, MAX) + '\n\n... (truncated)';
-            await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `[smoke] run #${context.runNumber}`,
-              body: '```\n' + body + '\n```',
-            });
+            const post = require('./scripts/post-tracker.js');
+            await post({ github, context, core, logPath: '/tmp/smoke.log', kind: 'smoke' });
