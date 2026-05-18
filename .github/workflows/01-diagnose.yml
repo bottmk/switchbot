@@ -84,13 +84,68 @@ jobs:
         env:
           DEVICES: ${{ secrets.DEVICES }}
         run: |
-          echo "$DEVICES" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          assert isinstance(d, list), 'DEVICES must be a JSON array'
+          python3 <<'PY'
+          import os, json, re
+          val = os.environ.get('DEVICES', '')
+          n = len(val)
+          # Structural counters (no value leakage)
+          print(f"Length: {n}")
+          if n == 0:
+              print("ERROR: DEVICES secret is empty or unset.")
+              raise SystemExit(1)
+          print(f"First char:  {val[0]!r}")
+          print(f"Last char:   {val[-1]!r}")
+          print(f"'[' count: {val.count('[')}")
+          print(f"']' count: {val.count(']')}")
+          print(f"'{{' count: {val.count('{')}")
+          print(f"'}}' count: {val.count('}')}")
+          print(f"',' count: {val.count(',')}")
+          # Detect common typo patterns without revealing data
+          if any(ch in val for ch in '［］｛｝，：　"'.replace('"','')):
+              print("WARN: full-width punctuation detected — use half-width [ ] { } , : only")
+          if '\n' in val: print("WARN: contains newline(s)")
+          if val.strip() != val: print("WARN: leading/trailing whitespace")
+          if val.startswith("'") or val.endswith("'"):
+              print("WARN: single-quote wrapping the entire value")
+          # Try parse
+          try:
+              d = json.loads(val)
+          except json.JSONDecodeError as e:
+              print(f"PARSE ERROR: {e}")
+              pos = e.pos
+              # Print structural context (positions only, not characters)
+              print(f"Error position: char {pos} of {n}")
+              # Print a histogram-style indicator
+              window_start = max(0, pos - 5)
+              window_end = min(n, pos + 5)
+              print(f"Context window [{window_start}:{window_end}]:")
+              ctx = val[window_start:window_end]
+              # Only show structural punctuation, mask alphanumerics as 'X'
+              safe = ''.join(c if c in '[]{},:" \t' else 'X' for c in ctx)
+              print(f"  {safe}")
+              print(f"  {' ' * (pos - window_start)}^ here")
+              print()
+              print("Expected format examples:")
+              print('  1 device:  [{"deviceId":"XX:XX:XX:XX:XX:XX","room":"living"}]')
+              print('  N devices: [{"deviceId":"...","room":"..."},{"deviceId":"...","room":"..."}]')
+              raise SystemExit(1)
+          if not isinstance(d, list):
+              print(f"ERROR: top-level must be a JSON array, got {type(d).__name__}")
+              raise SystemExit(1)
           for i, x in enumerate(d):
-              assert isinstance(x, dict), f'devices[{i}] not a dict'
-              assert 'deviceId' in x and 'room' in x, f'devices[{i}] missing deviceId/room'
-              print(f'  device[{i}]: deviceId={x[\"deviceId\"][:6]}... room={x[\"room\"]}')
-          print(f'DEVICES OK ({len(d)} entries)')
-          "
+              if not isinstance(x, dict):
+                  print(f"ERROR: devices[{i}] is {type(x).__name__}, must be object")
+                  raise SystemExit(1)
+              if 'deviceId' not in x:
+                  print(f"ERROR: devices[{i}] missing 'deviceId'")
+                  raise SystemExit(1)
+              if 'room' not in x:
+                  print(f"ERROR: devices[{i}] missing 'room'")
+                  raise SystemExit(1)
+              did = x['deviceId']
+              # Soft-validate MAC format
+              if not re.match(r'^[0-9A-Fa-f]{2}([:-]?[0-9A-Fa-f]{2}){5}$', str(did)):
+                  print(f"WARN: devices[{i}].deviceId doesn't look like a MAC address")
+              print(f"  device[{i}]: deviceId=***(len={len(did)}) room={x['room']!r}")
+          print(f"DEVICES OK ({len(d)} entries)")
+          PY
