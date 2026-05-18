@@ -15,7 +15,7 @@ DEVICES = "[]"
 [[d1_databases]]
 binding = "DB"
 database_name = "switchbot-logs"
-database_id = "REPLACE_WITH_ACTUAL_ID"
+database_id = "0688f834-c392-46f9-8206-6daa5e3d5abf"
 
 # Secrets — set via `wrangler secret put <NAME>`. Do NOT commit real values.
 #   wrangler secret put SWITCHBOT_API_TOKEN
