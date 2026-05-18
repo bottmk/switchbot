@@ -1,0 +1,185 @@
+name: "07: Diag → Issue"
+
+# Captures diagnostic output and posts it as a GitHub Issue so Claude can
+# read it via the github MCP (which has read access to issues but not to
+# raw Actions logs).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run all diagnostics, capture to /tmp/diag.log
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SWITCHBOT_API_TOKEN: ${{ secrets.SWITCHBOT_API_TOKEN }}
+          SWITCHBOT_API_SECRET: ${{ secrets.SWITCHBOT_API_SECRET }}
+          SWITCHBOT_WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
+          DEVICES: ${{ secrets.DEVICES }}
+        run: |
+          set +e
+          LOG=/tmp/diag.log
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
+
+          echo "=== Runner ==="
+          uname -a
+          echo "Node: $(node --version)"
+          echo "npm:  $(npm --version)"
+          echo "Python: $(python3 --version)"
+
+          echo
+          echo "=== Repository tree ==="
+          ls -la
+
+          echo
+          echo "=== Secrets presence (length only, no values) ==="
+          chk() {
+            local n="$1"; local v="$2"
+            if [ -z "$v" ]; then echo "MISSING: $n"
+            else echo "OK ($(printf '%s' "$v" | wc -c) chars): $n"
+            fi
+          }
+          chk CLOUDFLARE_API_TOKEN     "$CLOUDFLARE_API_TOKEN"
+          chk CLOUDFLARE_ACCOUNT_ID    "$CLOUDFLARE_ACCOUNT_ID"
+          chk SWITCHBOT_API_TOKEN      "$SWITCHBOT_API_TOKEN"
+          chk SWITCHBOT_API_SECRET     "$SWITCHBOT_API_SECRET"
+          chk SWITCHBOT_WEBHOOK_SECRET "$SWITCHBOT_WEBHOOK_SECRET"
+          chk DEVICES                  "$DEVICES"
+
+          echo
+          echo "=== npm install ==="
+          npm install --silent --no-audit --no-fund 2>&1 | tail -10
+
+          echo
+          echo "=== wrangler --version ==="
+          npx wrangler --version 2>&1
+
+          echo
+          echo "=== wrangler whoami (Cloudflare API token test) ==="
+          npx wrangler whoami 2>&1
+          echo "(exit=$?)"
+
+          echo
+          echo "=== Account ID API verification ==="
+          STATUS=$(curl -sS -o /tmp/cf-resp -w "%{http_code}" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID")
+          echo "HTTP $STATUS"
+          python3 - <<'PY'
+          import json
+          try:
+              with open('/tmp/cf-resp') as f: r = json.load(f)
+              print(f"success: {r.get('success')}")
+              print(f"errors:  {r.get('errors')}")
+              # Don't print the result body verbatim (may contain account name)
+              if r.get('result'):
+                  print(f"result keys: {list(r['result'].keys())}")
+          except Exception as e:
+              print(f"(parse error: {e})")
+          PY
+
+          echo
+          echo "=== DEVICES JSON validation ==="
+          python3 - <<'PY'
+          import os, json, re
+          val = os.environ.get('DEVICES','')
+          n = len(val)
+          print(f"Length: {n}")
+          if n == 0:
+              print("ERROR: empty")
+              raise SystemExit(0)
+          print(f"First char: {val[0]!r}")
+          print(f"Last char:  {val[-1]!r}")
+          print(f"'[' count: {val.count('[')}  ']' count: {val.count(']')}")
+          print(f"'{{' count: {val.count('{')}  '}}' count: {val.count('}')}")
+          print(f"',' count: {val.count(',')}")
+          if any(c in val for c in '［］｛｝，：'):
+              print("WARN: full-width punctuation detected")
+          if '\n' in val: print("WARN: contains newline")
+          if val.strip() != val: print("WARN: leading/trailing whitespace")
+          try:
+              d = json.loads(val)
+              print(f"PARSE OK; type={type(d).__name__}")
+              if isinstance(d, list):
+                  print(f"entries: {len(d)}")
+                  for i,x in enumerate(d):
+                      keys = list(x.keys()) if isinstance(x,dict) else None
+                      print(f"  [{i}] keys={keys}")
+          except json.JSONDecodeError as e:
+              print(f"PARSE ERROR: {e}")
+              pos = e.pos
+              s = max(0,pos-8); e2 = min(n,pos+8)
+              ctx = val[s:e2]
+              # Mask non-structural chars
+              safe = ''.join(c if c in '[]{},:"\'\t ' else 'X' for c in ctx)
+              print(f"Window [{s}:{e2}] (alphas masked): {safe!r}")
+              print(f"Position marker:                  {' '*(pos-s+1)}^")
+          PY
+
+          echo
+          echo "=== Workflow files present ==="
+          ls -la .github/workflows/
+
+      - name: Scrub any secret values from the captured log
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SWITCHBOT_API_TOKEN: ${{ secrets.SWITCHBOT_API_TOKEN }}
+          SWITCHBOT_API_SECRET: ${{ secrets.SWITCHBOT_API_SECRET }}
+          SWITCHBOT_WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
+          DEVICES: ${{ secrets.DEVICES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          try:
+              with open('/tmp/diag.log','r') as f: t = f.read()
+          except FileNotFoundError:
+              t = '(no log)'
+          for n in ['CLOUDFLARE_API_TOKEN','CLOUDFLARE_ACCOUNT_ID','SWITCHBOT_API_TOKEN','SWITCHBOT_API_SECRET','SWITCHBOT_WEBHOOK_SECRET','DEVICES']:
+              v = os.environ.get(n,'')
+              if v:
+                  t = t.replace(v, f'<<{n}>>')
+          with open('/tmp/diag.log','w') as f: f.write(t)
+          print(f"Sanitized: {len(t)} chars")
+          PY
+
+      - name: Post log as GitHub Issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '(no log captured)';
+            try { body = fs.readFileSync('/tmp/diag.log', 'utf8'); } catch {}
+            // GitHub issue body limit is 65535 chars; reserve room for code fences.
+            const MAX = 60000;
+            if (body.length > MAX) body = body.slice(0, MAX) + '\n\n... (truncated)';
+            const wrapped = '```\n' + body + '\n```';
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[diag] run #${context.runNumber} on ${context.ref.replace('refs/heads/','')}`,
+              body: wrapped,
+            });
+            core.setOutput('issue_url', issue.data.html_url);
+            core.summary
+              .addHeading('Diagnostic Issue Created')
+              .addLink('Open issue', issue.data.html_url)
+              .write();
+            console.log('Issue URL:', issue.data.html_url);
