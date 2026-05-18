@@ -5,6 +5,16 @@ name: "06: Smoke test → Issue"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/switchbot-turso-setup-nk30n]
+    paths:
+      - 'src/**'
+      - '.github/workflows/06-smoke-test.yml'
+      - 'scripts/**'
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -12,7 +22,31 @@ permissions:
   pull-requests: write
 
 jobs:
+  loop-guard:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+      - id: check
+        run: |
+          AUTHORS=$(git log -3 --format='%ae')
+          CLAUDE=$(echo "$AUTHORS" | grep -c 'noreply@anthropic.com' || true)
+          echo "Recent authors:"
+          echo "$AUTHORS"
+          echo "Claude consecutive: $CLAUDE"
+          if [ "$CLAUDE" -ge 3 ]; then
+            echo "::warning::3+ consecutive Claude commits — halting auto-run to prevent loop."
+            echo "go=false" >> $GITHUB_OUTPUT
+          else
+            echo "go=true" >> $GITHUB_OUTPUT
+          fi
+
   smoke:
+    needs: loop-guard
+    if: needs.loop-guard.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,11 +96,15 @@ jobs:
           echo "Body:"; cat /tmp/r; echo
 
           echo
-          echo "=== Send a fake changeReport (should INSERT a webhook row) ==="
-          curl -sS -o /tmp/r -w "HTTP %{http_code}\n" "$WORKER_URL/webhook/$SWITCHBOT_WEBHOOK_SECRET" \
-            -X POST -H "Content-Type: application/json" \
-            -d '{"eventType":"changeReport","eventVersion":"1","context":{"deviceType":"WoMeterPlus","deviceMac":"SMOKE:TEST:00:00:00:00","temperature":22.5,"humidity":55,"battery":99,"timeOfSample":1747600000}}'
-          echo "Body:"; cat /tmp/r; echo
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "=== Send a fake changeReport (should INSERT a webhook row) ==="
+            curl -sS -o /tmp/r -w "HTTP %{http_code}\n" "$WORKER_URL/webhook/$SWITCHBOT_WEBHOOK_SECRET" \
+              -X POST -H "Content-Type: application/json" \
+              -d '{"eventType":"changeReport","eventVersion":"1","context":{"deviceType":"WoMeterPlus","deviceMac":"SMOKE:TEST:00:00:00:00","temperature":22.5,"humidity":55,"battery":99,"timeOfSample":1747600000}}'
+            echo "Body:"; cat /tmp/r; echo
+          else
+            echo "=== Skipping fake changeReport on push trigger (avoid polluting D1) ==="
+          fi
 
           echo
           echo "=== D1 table list ==="

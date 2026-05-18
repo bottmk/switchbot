@@ -2,12 +2,49 @@ name: "01: Diagnose"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/switchbot-turso-setup-nk30n]
+    paths:
+      - 'src/**'
+      - 'docs/db_setup.sql'
+      - 'wrangler.toml'
+      - '.github/workflows/01-diagnose.yml'
+      - 'scripts/**'
+
+concurrency:
+  group: diagnose-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  loop-guard:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 5
+      - id: check
+        run: |
+          # Bail if last 3 commits are all by Claude (loop suspect)
+          AUTHORS=$(git log -3 --format='%ae')
+          CLAUDE=$(echo "$AUTHORS" | grep -c 'noreply@anthropic.com' || true)
+          echo "Recent authors:"
+          echo "$AUTHORS"
+          echo "Claude consecutive: $CLAUDE"
+          if [ "$CLAUDE" -ge 3 ]; then
+            echo "::warning::3+ consecutive Claude commits — halting auto-run to prevent loop."
+            echo "go=false" >> $GITHUB_OUTPUT
+          else
+            echo "go=true" >> $GITHUB_OUTPUT
+          fi
+
   diagnose:
+    needs: loop-guard
+    if: needs.loop-guard.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
