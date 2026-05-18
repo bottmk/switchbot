@@ -6,9 +6,8 @@ compatibility_date = "2026-05-17"
 [triggers]
 crons = ["*/10 * * * *"]
 
-# Public vars (non-secret). DEVICES is a JSON string of [{deviceId, room}, ...].
-[vars]
-DEVICES = "[]"
+# DEVICES is set via `wrangler secret put DEVICES` (not [vars]) so a
+# stale wrangler.toml entry doesn't overwrite the real value on deploy.
 
 # D1 database binding. First create the DB and paste the returned ID:
 #   wrangler d1 create switchbot-logs
