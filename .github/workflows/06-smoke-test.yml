@@ -1,7 +1,14 @@
-name: "06: Smoke test (trigger cron + check D1)"
+name: "06: Smoke test → Issue"
+
+# Reads D1 status, sends a test webhook, and posts everything to a GitHub
+# Issue so Claude can read it via MCP.
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   smoke:
@@ -15,31 +22,101 @@ jobs:
 
       - run: npm install --no-audit --no-fund
 
-      - name: Manually trigger scheduled() once via wrangler
+      - name: Run smoke checks, capture all output
+        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SWITCHBOT_WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
         run: |
-          # Cloudflare provides a "test scheduled" endpoint via wrangler.
-          # In wrangler v3, this is `wrangler dev --test-scheduled` (local only).
-          # For remote one-shot, we hit the cron trigger endpoint manually.
-          # If unavailable, just wait for the next 10-min boundary.
-          echo "Wrangler v3 cannot manually invoke scheduled() on the remote Worker."
-          echo "The next cron tick will run automatically; check D1 after that."
-          echo "You can also send a test webhook payload via curl to trigger fetch()."
+          set +e
+          LOG=/tmp/smoke.log
+          : > "$LOG"
+          exec > >(tee -a "$LOG") 2>&1
 
-      - name: Show recent D1 rows
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
+          echo "=== Get Worker subdomain ==="
+          SUB_RESP=$(curl -sS \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")
+          SUB=$(echo "$SUB_RESP" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('result',{}).get('subdomain',''))")
+          echo "Subdomain: $SUB"
+          WORKER_URL="https://switchbot-temperature-logger.${SUB}.workers.dev"
+          echo "Worker URL: $WORKER_URL"
+
+          echo
+          echo "=== Worker reachability (root, expects 405) ==="
+          curl -sS -o /tmp/r -w "HTTP %{http_code}\n" "$WORKER_URL/" -X GET
+          echo "Body:"; cat /tmp/r; echo
+
+          echo
+          echo "=== Worker reachability with wrong secret (expects 401) ==="
+          curl -sS -o /tmp/r -w "HTTP %{http_code}\n" "$WORKER_URL/webhook/wrong-secret" \
+            -X POST -H "Content-Type: application/json" -d '{"eventType":"test"}'
+          echo "Body:"; cat /tmp/r; echo
+
+          echo
+          echo "=== Worker reachability with correct secret, non-changeReport (expects 200 {ok,ignored}) ==="
+          curl -sS -o /tmp/r -w "HTTP %{http_code}\n" "$WORKER_URL/webhook/$SWITCHBOT_WEBHOOK_SECRET" \
+            -X POST -H "Content-Type: application/json" -d '{"eventType":"smoke-test"}'
+          echo "Body:"; cat /tmp/r; echo
+
+          echo
+          echo "=== Send a fake changeReport (should INSERT a webhook row) ==="
+          curl -sS -o /tmp/r -w "HTTP %{http_code}\n" "$WORKER_URL/webhook/$SWITCHBOT_WEBHOOK_SECRET" \
+            -X POST -H "Content-Type: application/json" \
+            -d '{"eventType":"changeReport","eventVersion":"1","context":{"deviceType":"WoMeterPlus","deviceMac":"SMOKE:TEST:00:00:00:00","temperature":22.5,"humidity":55,"battery":99,"timeOfSample":1747600000}}'
+          echo "Body:"; cat /tmp/r; echo
+
+          echo
+          echo "=== D1 table list ==="
           npx wrangler d1 execute switchbot-logs --remote \
-            --command "SELECT id, device_id, timestamp, temperature, humidity, source FROM temperature_logs ORDER BY id DESC LIMIT 10"
+            --command "SELECT name FROM sqlite_master WHERE type='table'"
 
-      - name: Row count
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
+          echo
+          echo "=== D1 row count by source ==="
           npx wrangler d1 execute switchbot-logs --remote \
             --command "SELECT source, COUNT(*) AS n FROM temperature_logs GROUP BY source"
+
+          echo
+          echo "=== D1 latest 10 rows ==="
+          npx wrangler d1 execute switchbot-logs --remote \
+            --command "SELECT id, device_id, timestamp, temperature, humidity, absolute_humidity, room, battery, source FROM temperature_logs ORDER BY id DESC LIMIT 10"
+
+      - name: Scrub secrets from log
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SWITCHBOT_API_TOKEN: ${{ secrets.SWITCHBOT_API_TOKEN }}
+          SWITCHBOT_API_SECRET: ${{ secrets.SWITCHBOT_API_SECRET }}
+          SWITCHBOT_WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
+          DEVICES: ${{ secrets.DEVICES }}
+        run: |
+          python3 - <<'PY'
+          import os
+          try:
+              with open('/tmp/smoke.log') as f: t = f.read()
+          except FileNotFoundError:
+              t = '(no log)'
+          for n in ['CLOUDFLARE_API_TOKEN','CLOUDFLARE_ACCOUNT_ID','SWITCHBOT_API_TOKEN','SWITCHBOT_API_SECRET','SWITCHBOT_WEBHOOK_SECRET','DEVICES']:
+              v = os.environ.get(n,'')
+              if v: t = t.replace(v, f'<<{n}>>')
+          with open('/tmp/smoke.log','w') as f: f.write(t)
+          PY
+
+      - name: Post smoke result to GitHub Issue
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let body = '(no log)';
+            try { body = fs.readFileSync('/tmp/smoke.log','utf8'); } catch {}
+            const MAX = 60000;
+            if (body.length > MAX) body = body.slice(0, MAX) + '\n\n... (truncated)';
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[smoke] run #${context.runNumber}`,
+              body: '```\n' + body + '\n```',
+            });
