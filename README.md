@@ -15,57 +15,80 @@ SwitchBot 温湿度計から 10 分毎(cron)+ 変化時(Webhook)に温度・湿�
 - Cloudflare アカウント
 - SwitchBot API トークン + シークレット(SwitchBot アプリから発行)
 
-## セットアップ手順
+## デプロイ手順(推奨: GitHub Actions 経由)
 
-### 1. 依存インストール
+トークン類を **GitHub Secrets に暗号化保存**し、ワークフローからデプロイする方式。
+チャットやローカルにトークンを露出させない。
+
+### 1. Cloudflare Account ID を取得
+Cloudflare ダッシュボード右側に表示される 32 桁の hex 文字列。
+
+### 2. GitHub Secrets を登録
+リポジトリ `Settings → Secrets and variables → Actions → New repository secret` で以下を登録:
+
+| 名前 | 値 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API トークン(`Workers Scripts: Edit` + `D1: Edit` 権限、IP フィルタなし) |
+| `CLOUDFLARE_ACCOUNT_ID` | 上記 Account ID |
+| `SWITCHBOT_API_TOKEN` | SwitchBot アプリ → 開発者オプション |
+| `SWITCHBOT_API_SECRET` | 同上 |
+| `SWITCHBOT_WEBHOOK_SECRET` | `openssl rand -hex 32` で生成した 64 文字の hex |
+| `DEVICES` | `[{"deviceId":"XX:XX:XX:XX:XX:XX","room":"living"}]` 形式の JSON 文字列 |
+
+### 3. ワークフロー実行
+GitHub の `Actions` タブ → **`Deploy to Cloudflare Workers`** → **`Run workflow`** をクリック。
+初回は `register_webhook` を `true` にして実行。
+
+ワークフローは以下を自動実行:
+1. D1 データベース作成(初回のみ)+ `wrangler.toml` の `database_id` を自動コミット
+2. スキーマ適用
+3. Worker Secrets 登録(SwitchBot Token/Secret/WebhookSecret/Devices)
+4. デプロイ
+5. SwitchBot Webhook 登録(`register_webhook=true` のとき)
+6. D1 行数を検証
+
+### 4. 動作確認
+`Actions` の実行ログ末尾に `SELECT COUNT(*)` の結果が出る。
+継続監視は `npx wrangler tail`(要 wrangler login)。
+
+---
+
+## デプロイ手順(代替: 手動)
+
+ローカルから直接デプロイする場合。
+
+### 1. 依存インストールと認証
 ```bash
 npm install
+npx wrangler login
 ```
 
-### 2. D1 データベース作成
+### 2. D1 作成 & スキーマ適用
 ```bash
 npx wrangler d1 create switchbot-logs
-```
-出力された `database_id` を `wrangler.toml` の `[[d1_databases]]` セクションに貼り付ける。
-
-### 3. スキーマ適用
-```bash
+# 出力された database_id を wrangler.toml に貼り付け
 npx wrangler d1 execute switchbot-logs --remote --file=docs/db_setup.sql
 ```
 
-### 4. Secrets 設定
+### 3. Secrets 設定
 ```bash
 npx wrangler secret put SWITCHBOT_API_TOKEN
 npx wrangler secret put SWITCHBOT_API_SECRET
-npx wrangler secret put SWITCHBOT_WEBHOOK_SECRET   # 32 文字以上のランダム文字列
+npx wrangler secret put SWITCHBOT_WEBHOOK_SECRET
+npx wrangler secret put DEVICES   # JSON 文字列
 ```
 
-### 5. デバイスリスト設定
-`wrangler.toml` の `DEVICES` を編集:
-```toml
-DEVICES = '[{"deviceId":"XX:XX:XX:XX:XX:XX","room":"living"},{"deviceId":"YY:YY:YY:YY:YY:YY","room":"bedroom"}]'
-```
-
-### 6. デプロイ
+### 4. デプロイ
 ```bash
 npm run deploy
 ```
 
-### 7. SwitchBot Webhook 登録
-SwitchBot API に対して Webhook URL を登録:
+### 5. SwitchBot Webhook 登録
 ```bash
-curl -X POST https://api.switch-bot.com/v1.1/webhook/setupWebhook \
-  -H "Authorization: $SWITCHBOT_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"action":"setupWebhook","url":"https://<your-worker>.workers.dev/webhook/<SWITCHBOT_WEBHOOK_SECRET>","deviceList":"ALL"}'
+WORKER_URL=https://switchbot-temperature-logger.<sub>.workers.dev \
+SWITCHBOT_API_TOKEN=... SWITCHBOT_API_SECRET=... SWITCHBOT_WEBHOOK_SECRET=... \
+  node scripts/register-webhook.js
 ```
-※ 署名付きリクエストが必要(`sign`, `t`, `nonce` ヘッダ)。詳細は SwitchBot 公式 API ドキュメント参照。
-
-### 8. 動作確認
-```bash
-npm run tail
-```
-cron は 10 分毎に動作。Webhook は対応機種の温湿度変化時に発火。
 
 ## ローカル開発
 1. `.dev.vars.example` を `.dev.vars` にコピーして値を埋める
