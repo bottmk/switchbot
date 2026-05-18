@@ -29,6 +29,11 @@ jobs:
           fetch-depth: 5
       - id: check
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual trigger — bypassing loop guard."
+            echo "go=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           # Bail if last 3 commits are all by Claude (loop suspect)
           AUTHORS=$(git log -3 --format='%ae')
           CLAUDE=$(echo "$AUTHORS" | grep -c 'noreply@anthropic.com' || true)

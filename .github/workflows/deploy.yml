@@ -163,5 +163,5 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const post = require('./scripts/post-tracker.js');
+            const post = require('./scripts/post-tracker.cjs');
             await post({ github, context, core, logPath: '/tmp/deploy-report.txt', kind: 'deploy-${{ job.status }}' });

@@ -35,6 +35,11 @@ jobs:
           fetch-depth: 5
       - id: check
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual trigger — bypassing loop guard."
+            echo "go=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
           AUTHORS=$(git log -3 --format='%ae')
           CLAUDE=$(echo "$AUTHORS" | grep -c 'noreply@anthropic.com' || true)
           echo "Recent authors:"
@@ -201,5 +206,5 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const post = require('./scripts/post-tracker.js');
+            const post = require('./scripts/post-tracker.cjs');
             await post({ github, context, core, logPath: '/tmp/diag.log', kind: 'diag' });
