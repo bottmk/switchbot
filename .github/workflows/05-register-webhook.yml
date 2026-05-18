@@ -1,0 +1,68 @@
+name: "05: Register SwitchBot webhook"
+
+on:
+  workflow_dispatch:
+    inputs:
+      worker_subdomain:
+        description: 'Your workers.dev subdomain (e.g. "yourname" for yourname.workers.dev). Leave blank to auto-derive from the Worker URL.'
+        required: false
+        type: string
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Determine Worker URL
+        id: url
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SUBDOMAIN_INPUT: ${{ inputs.worker_subdomain }}
+        run: |
+          set -e
+          if [ -n "$SUBDOMAIN_INPUT" ]; then
+            URL="https://switchbot-temperature-logger.${SUBDOMAIN_INPUT}.workers.dev"
+          else
+            # Try to get subdomain via API
+            RESP=$(curl -sS \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")
+            echo "Subdomain API response: $RESP"
+            SUB=$(echo "$RESP" | python3 -c "import sys,json; r=json.load(sys.stdin); print(r.get('result',{}).get('subdomain',''))")
+            if [ -z "$SUB" ]; then
+              echo "Could not determine subdomain. Provide it as input."
+              exit 1
+            fi
+            URL="https://switchbot-temperature-logger.${SUB}.workers.dev"
+          fi
+          echo "Worker URL: $URL"
+          echo "worker_url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Check Worker reachability
+        env:
+          URL: ${{ steps.url.outputs.worker_url }}
+          WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
+        run: |
+          # Should return 200 with {ok:true,ignored:true} for non-changeReport payload
+          curl -sS -o /tmp/resp -w "HTTP %{http_code}\n" \
+            -X POST "${URL}/webhook/${WEBHOOK_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d '{"eventType":"diagnostic"}'
+          echo "Body:"
+          cat /tmp/resp
+
+      - name: Register webhook with SwitchBot
+        env:
+          SWITCHBOT_API_TOKEN: ${{ secrets.SWITCHBOT_API_TOKEN }}
+          SWITCHBOT_API_SECRET: ${{ secrets.SWITCHBOT_API_SECRET }}
+          SWITCHBOT_WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
+          WORKER_URL: ${{ steps.url.outputs.worker_url }}
+        run: node scripts/register-webhook.js

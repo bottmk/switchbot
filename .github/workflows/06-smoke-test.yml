@@ -1,0 +1,45 @@
+name: "06: Smoke test (trigger cron + check D1)"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Manually trigger scheduled() once via wrangler
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # Cloudflare provides a "test scheduled" endpoint via wrangler.
+          # In wrangler v3, this is `wrangler dev --test-scheduled` (local only).
+          # For remote one-shot, we hit the cron trigger endpoint manually.
+          # If unavailable, just wait for the next 10-min boundary.
+          echo "Wrangler v3 cannot manually invoke scheduled() on the remote Worker."
+          echo "The next cron tick will run automatically; check D1 after that."
+          echo "You can also send a test webhook payload via curl to trigger fetch()."
+
+      - name: Show recent D1 rows
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute switchbot-logs --remote \
+            --command "SELECT id, device_id, timestamp, temperature, humidity, source FROM temperature_logs ORDER BY id DESC LIMIT 10"
+
+      - name: Row count
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute switchbot-logs --remote \
+            --command "SELECT source, COUNT(*) AS n FROM temperature_logs GROUP BY source"

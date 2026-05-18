@@ -1,0 +1,79 @@
+name: "02: Initialize D1 database"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  init-d1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm install --no-audit --no-fund
+
+      - name: Create D1 if needed (idempotent)
+        id: d1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if grep -q "REPLACE_WITH_ACTUAL_ID" wrangler.toml; then
+            echo "Creating switchbot-logs..."
+            CREATE_OUT=$(npx wrangler d1 create switchbot-logs 2>&1 || true)
+            echo "$CREATE_OUT"
+            DB_ID=$(echo "$CREATE_OUT" | grep -oE '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}' | head -1)
+            if [ -z "$DB_ID" ]; then
+              echo "Create failed or already exists. Listing existing..."
+              LIST=$(npx wrangler d1 list --json 2>&1)
+              echo "$LIST"
+              DB_ID=$(echo "$LIST" | python3 -c "import sys,json; out=json.load(sys.stdin); print(next((d.get('uuid') or d.get('database_id') for d in out if d.get('name')=='switchbot-logs'), ''))" 2>/dev/null || true)
+            fi
+            if [ -z "$DB_ID" ]; then
+              echo "ERROR: could not determine database_id"
+              exit 1
+            fi
+            sed -i "s/REPLACE_WITH_ACTUAL_ID/$DB_ID/" wrangler.toml
+            echo "Set database_id=$DB_ID"
+            echo "new=true" >> $GITHUB_OUTPUT
+          else
+            echo "Already configured. Current wrangler.toml:"
+            grep database_id wrangler.toml
+            echo "new=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Apply schema
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 execute switchbot-logs --remote --file=docs/db_setup.sql
+
+      - name: Verify schema
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 execute switchbot-logs --remote \
+            --command "SELECT name FROM sqlite_master WHERE type='table'"
+
+      - name: Commit database_id if new
+        if: steps.d1.outputs.new == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add wrangler.toml
+          if ! git diff --cached --quiet; then
+            git commit -m "Set D1 database_id from init-d1 workflow"
+            git push
+          else
+            echo "No changes to commit"
+          fi
