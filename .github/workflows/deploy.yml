@@ -68,10 +68,25 @@ jobs:
           SWITCHBOT_WEBHOOK_SECRET: ${{ secrets.SWITCHBOT_WEBHOOK_SECRET }}
           DEVICES: ${{ secrets.DEVICES }}
         run: |
-          printf '%s' "$SWITCHBOT_API_TOKEN"      | npx wrangler secret put SWITCHBOT_API_TOKEN
-          printf '%s' "$SWITCHBOT_API_SECRET"     | npx wrangler secret put SWITCHBOT_API_SECRET
-          printf '%s' "$SWITCHBOT_WEBHOOK_SECRET" | npx wrangler secret put SWITCHBOT_WEBHOOK_SECRET
-          printf '%s' "$DEVICES"                  | npx wrangler secret put DEVICES
+          set +e
+          fail=0
+          put_secret() {
+            local name="$1"
+            local val="$2"
+            if [ -z "$val" ]; then
+              echo "::error::Secret $name is empty in env"; fail=1; return
+            fi
+            echo "--- putting $name (${#val} chars) ---"
+            printf '%s' "$val" | npx wrangler secret put "$name" 2>&1
+            local rc=$?
+            echo "--- $name exit=$rc ---"
+            if [ $rc -ne 0 ]; then fail=1; fi
+          }
+          put_secret SWITCHBOT_API_TOKEN      "$SWITCHBOT_API_TOKEN"
+          put_secret SWITCHBOT_API_SECRET     "$SWITCHBOT_API_SECRET"
+          put_secret SWITCHBOT_WEBHOOK_SECRET "$SWITCHBOT_WEBHOOK_SECRET"
+          put_secret DEVICES                  "$DEVICES"
+          if [ $fail -ne 0 ]; then exit 1; fi
 
       - name: Deploy Worker
         id: deploy
