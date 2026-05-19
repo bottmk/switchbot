@@ -72,6 +72,74 @@ export function calcAbsoluteHumidity(t, h) {
   return Math.round(ah * 100) / 100;
 }
 
+// SwitchBot device types that report temperature/humidity.
+const METER_TYPES = new Set(['Meter', 'MeterPlus', 'MeterPro', 'MeterPro(CO2)', 'WoIOSensor', 'WoIOSensorTH', 'Hub 2']);
+
+// Module-scope cache. Survives across requests within the same isolate.
+let _deviceListCache = null;
+let _deviceListCachedAt = 0;
+const DEVICE_LIST_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function normalizeMac(s) {
+  return String(s || '').toUpperCase().replace(/[^0-9A-F]/g, '');
+}
+
+/**
+ * Fetches /v1.1/devices, filters to meter-type devices, caches the result in
+ * module scope. Returns [{ deviceId: 'AABBCCDDEEFF', name: '...', type: '...' }].
+ * On API failure, returns the last good cache if any, else [].
+ */
+export async function fetchDeviceList(env, { force = false } = {}) {
+  const now = Date.now();
+  if (!force && _deviceListCache && now - _deviceListCachedAt < DEVICE_LIST_TTL_MS) {
+    return _deviceListCache;
+  }
+  const t = String(now);
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  let response;
+  try {
+    response = await fetch('https://api.switch-bot.com/v1.1/devices', {
+      headers: {
+        Authorization: env.SWITCHBOT_API_TOKEN,
+        sign, t, nonce,
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (err) {
+    console.log(`fetchDeviceList network error: ${err}`);
+    return _deviceListCache || [];
+  }
+  if (!response.ok) {
+    console.log(`fetchDeviceList HTTP ${response.status}`);
+    return _deviceListCache || [];
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    console.log(`fetchDeviceList statusCode ${json.statusCode}: ${json.message}`);
+    return _deviceListCache || [];
+  }
+  const list = (json.body?.deviceList || [])
+    .filter((d) => METER_TYPES.has(d.deviceType))
+    .map((d) => ({
+      deviceId: normalizeMac(d.deviceId),
+      name: d.deviceName || normalizeMac(d.deviceId),
+      type: d.deviceType,
+    }));
+  _deviceListCache = list;
+  _deviceListCachedAt = now;
+  return list;
+}
+
+/** Look up a device's display name from cache; falls back to short id. */
+export function lookupDeviceName(devices, deviceMac) {
+  const target = normalizeMac(deviceMac);
+  if (!target) return 'unknown';
+  const found = (devices || []).find((d) => d.deviceId === target);
+  if (found) return found.name;
+  return target.length > 6 ? target.slice(-6) : target;
+}
+
 /**
  * Returns a JST timestamp string suitable for SQLite `DATETIME`.
  * Format: `YYYY-MM-DD HH:MM:SS`.

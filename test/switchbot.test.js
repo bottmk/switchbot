@@ -1,6 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calcAbsoluteHumidity, jstTimestamp } from '../src/switchbot.js';
+import { calcAbsoluteHumidity, jstTimestamp, lookupDeviceName } from '../src/switchbot.js';
+
+test('lookupDeviceName returns deviceName when found', () => {
+  const devices = [{ deviceId: 'AABBCCDDEEFF', name: 'リビング温湿度計', type: 'MeterPlus' }];
+  assert.equal(lookupDeviceName(devices, 'AABBCCDDEEFF'), 'リビング温湿度計');
+});
+
+test('lookupDeviceName normalizes colon-separated input', () => {
+  const devices = [{ deviceId: 'AABBCCDDEEFF', name: 'kitchen', type: 'Meter' }];
+  assert.equal(lookupDeviceName(devices, 'AA:BB:CC:DD:EE:FF'), 'kitchen');
+});
+
+test('lookupDeviceName falls back to short id when not found', () => {
+  const devices = [{ deviceId: 'AABBCCDDEEFF', name: 'living', type: 'Meter' }];
+  assert.equal(lookupDeviceName(devices, '112233445566'), '445566');
+});
+
+test('lookupDeviceName returns unknown for empty input', () => {
+  assert.equal(lookupDeviceName([], ''), 'unknown');
+  assert.equal(lookupDeviceName([], null), 'unknown');
+});
 
 test('calcAbsoluteHumidity at 20C 50% is around 8.65 g/m^3', () => {
   const ah = calcAbsoluteHumidity(20, 50);

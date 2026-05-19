@@ -1,6 +1,7 @@
-import { loadDevices, lookupRoom } from './devices.js';
 import {
+  fetchDeviceList,
   fetchDeviceStatus,
+  lookupDeviceName,
   calcAbsoluteHumidity,
   jstTimestamp,
   verifyWebhookRequest,
@@ -10,7 +11,7 @@ import { DASHBOARD_HTML } from './dashboard.js';
 
 export default {
   async scheduled(event, env, ctx) {
-    const devices = loadDevices(env);
+    const devices = await fetchDeviceList(env);
     const timestamp = jstTimestamp();
 
     const results = await Promise.allSettled(
@@ -29,14 +30,14 @@ export default {
           temperature,
           humidity,
           absolute_humidity: calcAbsoluteHumidity(temperature, humidity),
-          room: d.room,
+          room: d.name,
           battery,
           source: 'cron',
           timestamp,
         });
       } else {
         failures++;
-        console.log(`fetchDeviceStatus failed for ${d.deviceId}: ${r.reason}`);
+        console.log(`fetchDeviceStatus failed for ${d.deviceId} (${d.name}): ${r.reason}`);
       }
     }
 
@@ -126,13 +127,13 @@ async function handleWebhook(env, request) {
     });
   }
 
-  const devices = loadDevices(env);
+  const devices = await fetchDeviceList(env);
   const row = {
     device_id: wctx.deviceMac,
     temperature: wctx.temperature,
     humidity: wctx.humidity,
     absolute_humidity: calcAbsoluteHumidity(wctx.temperature, wctx.humidity),
-    room: lookupRoom(devices, wctx.deviceMac) || 'unknown',
+    room: lookupDeviceName(devices, wctx.deviceMac),
     battery: typeof wctx.battery === 'number' ? wctx.battery : null,
     source: 'webhook',
     timestamp: jstTimestamp(),
