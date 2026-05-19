@@ -48,9 +48,22 @@ jobs:
             echo "$RECENT"
             echo "EOF"
           } >> $GITHUB_OUTPUT
-          if [ "$CLAUDE" -ge 10 ]; then
-            echo "::warning::10+ consecutive Claude commits — halting auto-run to prevent loop."
+          # Author count is already computed as $CLAUDE
+          # S1: file-set churn over last 8 Claude commits
+          N=8
+          S1_FILES=$(git log -n $N --author='noreply@anthropic.com' --no-merges --name-only --pretty=format: | sed '/^$/d' | sort -u | wc -l)
+          S1_COMMITS=$(git log -n $N --author='noreply@anthropic.com' --no-merges --oneline | wc -l)
+          S1_NET=$(git log -n $N --author='noreply@anthropic.com' --no-merges --shortstat --pretty=format: | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
+          echo "S1: files=$S1_FILES commits=$S1_COMMITS net=$S1_NET"
+          echo "s1_files=$S1_FILES" >> $GITHUB_OUTPUT
+          echo "s1_net=$S1_NET" >> $GITHUB_OUTPUT
+          THRASH=0
+          if [ "$S1_COMMITS" -ge 8 ] && [ "$S1_FILES" -le 3 ] && [ "$S1_NET" -lt 20 ]; then THRASH=1; fi
+
+          if [ "$CLAUDE" -ge 10 ] && [ "$THRASH" -eq 1 ]; then
+            echo "::warning::Loop guard tripped: 10+ Claude commits AND file thrash detected."
             echo "go=false" >> $GITHUB_OUTPUT
+            echo "halt_reason=thrash" >> $GITHUB_OUTPUT
           else
             echo "go=true" >> $GITHUB_OUTPUT
           fi
@@ -68,7 +81,7 @@ jobs:
             const body = [
               `### 🛑 [auto-halted] ${context.workflow} run #${context.runNumber}`,
               '',
-              '10+ consecutive Claude commits detected — loop guard tripped.',
+              `Loop guard tripped: 10+ consecutive Claude commits AND file-set churn detected (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions).`,
               '',
               'Last 10 commits:',
               '```',
