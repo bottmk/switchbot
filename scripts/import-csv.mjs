@@ -47,7 +47,7 @@ function wrangler(args) {
 
 function getCutoff(deviceId) {
   // returns ISO-ish 'YYYY-MM-DD HH:MM:SS' or null
-  const sql = `SELECT MIN(timestamp) AS t FROM temperature_logs WHERE device_id='${sqlEscape(deviceId)}' AND source IN ('cron','webhook')`;
+  const sql = `SELECT MIN(timestamp) AS t FROM temperature_logs WHERE device_id='${sqlEscape(deviceId)}' AND source IN ('cron','webhook','import')`;
   const r = wrangler(['d1', 'execute', DB_NAME, '--remote', '--json', '--command', sql]);
   if (r.code !== 0) {
     console.error(`cutoff query failed for ${deviceId}: ${r.stderr}`);
