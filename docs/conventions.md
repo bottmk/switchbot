@@ -162,6 +162,89 @@ wrangler.toml を再適用して古い Var を消してから Secret を put す
 - GitHub Actions Secrets が最強(暗号化、登録後閲覧不可、Workflow 越しに自動配布)
 - Private リポでは Spending Limit を $0 に設定して暴走時の課金を 0 に固定
 
+## デバッグの進め方
+
+### 前提: Claude は Actions ログを直接読めない
+
+GitHub MCP に workflow run の logs 取得ツールがない。WebFetch でも認証必須
+ステップログは読めない。**必ずワークフロー側から PR コメントとして出力させる**
+仕組みを用意しておくこと(post-tracker.cjs パターン)。
+
+### 失敗を切り分ける順序
+
+1. **一体型ワークフローで失敗** → どのステップで死んだか判別困難
+2. **「読み取り系 / 状態変化系 / デプロイ系」に分割**:
+   - read-only diagnostic(secrets 存在、認証確認、設定検証)
+   - state-changing(DB 作成、Secret 登録、Webhook 登録)
+   - deploy
+3. **失敗ステップの中をさらに per-item ループに展開**(エラー箇所が分かる粒度まで):
+   ```bash
+   set +e; fail=0
+   put_secret() {
+     echo "--- putting $1 (${#2} chars) ---"
+     printf '%s' "$2" | npx wrangler secret put "$1" 2>&1
+     local rc=$?
+     echo "--- $1 exit=$rc ---"
+     if [ $rc -ne 0 ]; then fail=1; fi
+   }
+   put_secret A "$A"; put_secret B "$B"
+   [ $fail -ne 0 ] && exit 1
+   ```
+4. **直近 N 行を PR コメント化**(scrub 必須):
+   ```yaml
+   - name: Capture
+     run: |
+       exec > >(tee -a /tmp/run.log) 2>&1
+       # all commands here are captured
+       ...
+   ```
+5. PR コメント受信 → Claude が解析 → 修正 push
+
+### 「サイレント halt」を作らない
+
+`continue-on-error: true` を付けたステップが exit 1 でも次に進む時、何が
+起きたか分かるよう必ず `--- $NAME exit=$rc ---` 等の終了マーカーを残す。
+無音で 0 行になるのが一番デバッグしにくい。
+
+### 環境状態と設定ファイルの「ドリフト」
+
+`wrangler.toml` / `package.json` / `.dev.vars` を編集した時、**現在
+デプロイされている Worker の bindings 一覧と一致しているか**を必ず疑う。
+
+事例:`[vars] DEVICES = "[]"` を toml から消した後、deploy 前に
+`wrangler secret put DEVICES` を実行 → 古い Var がまだ Worker に残ってて
+binding 名衝突。
+
+対策: `wrangler.toml` の bindings 系を弄った時の checklist:
+- [ ] 削除した binding 名で `secret put` が走らないか?
+- [ ] その deploy 順序は「toml 再適用 → secret put」になっているか?
+- [ ] 古い state の Worker と新 toml の整合性は?
+
+### 修正サイクルの長さで体感が変わる
+
+書式チェック・パース・正規化の単体テストを書いておくと、サイクルが
+「push → CI fail → 即原因判明 → 修正 push」(数分)で回る。
+無い場合は「push → デプロイ → 数時間後にデータ欠損に気付く → ログ漁る」
+(半日)になる。後者は**コストが 10 倍以上違う**。
+
+### 試行 1 回ごとの記録
+
+PR コメントの履歴が事実上の「実験ノート」になる。タイトルに
+`[deploy-success]` / `[deploy-failure]` / `[smoke]` / `[diag]` 等のラベル
+を付けておくと、後から「あの時何が起きたか」を辿りやすい。
+
+### よくある詰まり所(Cloudflare Workers / SwitchBot 案件向け)
+
+| 症状 | 一次原因の疑い |
+|---|---|
+| `Host not in allowlist (403)` | API Token の IP filter |
+| `Binding name 'X' already in use [10053]` | Var と Secret の名前衝突 |
+| `Authentication error [10000]` | Token 期限切れ / Revoke 済み |
+| Webhook 受けるが `room=unknown` | DEVICES の deviceId が webhook 書式と不一致 |
+| cron 0 行 | DEVICES が空 / deviceId 書式が SwitchBot API と不一致 |
+| `require is not defined` | `package.json` `type: module` 下で `.js` を CommonJS require している(`.cjs` に rename) |
+| account "locked" billing | Public リポは Actions 無制限。Private リポの月クォータ枯渇が原因の場合あり |
+
 ## Claude の自律レベル
 
 - **Lv1 同期**: ユーザが毎回 Run/Done を伝える
