@@ -68,7 +68,25 @@ function mkChart(ctx, label, ylabel) {
         legend: { position: 'bottom' },
       },
       scales: {
-        x: { type: 'time', time: { tooltipFormat: 'MM-dd HH:mm' } },
+        x: {
+          type: 'time',
+          time: {
+            tooltipFormat: 'MM-dd HH:mm',
+            displayFormats: {
+              minute: 'HH:mm',
+              hour: 'HH:mm',
+              day: 'MM/dd',
+              week: 'MM/dd',
+              month: 'yyyy-MM',
+            },
+          },
+          ticks: {
+            maxRotation: 0,
+            minRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 8,
+          },
+        },
         y: { title: { display: true, text: ylabel } },
       },
       elements: { point: { radius: 1.5 }, line: { tension: 0.2 } },
