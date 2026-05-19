@@ -27,11 +27,13 @@ export async function signRequest(token, secret, t, nonce) {
  * @returns {Promise<{temperature:number, humidity:number, battery:number}>}
  */
 export async function fetchDeviceStatus(env, deviceId) {
+  // SwitchBot API expects MAC without separators, uppercase.
+  const apiId = String(deviceId || '').toUpperCase().replace(/[^0-9A-F]/g, '');
   const t = Date.now().toString();
   const nonce = crypto.randomUUID();
   const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
 
-  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${deviceId}/status`, {
+  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${apiId}/status`, {
     method: 'GET',
     headers: {
       Authorization: env.SWITCHBOT_API_TOKEN,
