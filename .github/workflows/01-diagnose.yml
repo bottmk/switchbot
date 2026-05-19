@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 5
+          fetch-depth: 15
       - id: check
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
@@ -37,19 +37,19 @@ jobs:
             echo "go=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          AUTHORS=$(git log -3 --format='%ae')
+          AUTHORS=$(git log -10 --format='%ae')
           CLAUDE=$(echo "$AUTHORS" | grep -c 'noreply@anthropic.com' || true)
           echo "Recent authors:"
           echo "$AUTHORS"
           echo "Claude consecutive: $CLAUDE"
-          RECENT=$(git log -3 --format='- %h %ae: %s')
+          RECENT=$(git log -10 --format='- %h %ae: %s')
           {
             echo "recent<<EOF"
             echo "$RECENT"
             echo "EOF"
           } >> $GITHUB_OUTPUT
-          if [ "$CLAUDE" -ge 3 ]; then
-            echo "::warning::3+ consecutive Claude commits — halting auto-run to prevent loop."
+          if [ "$CLAUDE" -ge 10 ]; then
+            echo "::warning::10+ consecutive Claude commits — halting auto-run to prevent loop."
             echo "go=false" >> $GITHUB_OUTPUT
           else
             echo "go=true" >> $GITHUB_OUTPUT
@@ -68,9 +68,9 @@ jobs:
             const body = [
               `### 🛑 [auto-halted] ${context.workflow} run #${context.runNumber}`,
               '',
-              '3+ consecutive Claude commits detected — loop guard tripped.',
+              '10+ consecutive Claude commits detected — loop guard tripped.',
               '',
-              'Last 3 commits:',
+              'Last 10 commits:',
               '```',
               `${{ steps.check.outputs.recent }}`,
               '```',
