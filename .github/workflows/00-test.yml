@@ -1,0 +1,35 @@
+name: "00: Tests"
+
+# Unit tests for normalization / pure helper logic. Runs on every push
+# to the development branch. No loop-guard: tests don't push back, so
+# there's no infinite loop risk, and we always want to know if a change
+# broke an invariant.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/switchbot-turso-setup-nk30n]
+    paths:
+      - 'src/**'
+      - 'test/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/00-test.yml'
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: npm test
