@@ -23,6 +23,7 @@ permissions:
   contents: read
   issues: write
   pull-requests: write
+  actions: read
 
 jobs:
   loop-guard:
@@ -33,11 +34,14 @@ jobs:
       s1_files: ${{ steps.check.outputs.s1_files }}
       s1_net: ${{ steps.check.outputs.s1_net }}
       s2_dup: ${{ steps.check.outputs.s2_dup }}
+      s3_fail: ${{ steps.check.outputs.s3_fail }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 15
       - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             echo "Manual trigger — bypassing loop guard."
@@ -77,10 +81,27 @@ jobs:
           echo "S2: dup_count=$S2_DUP"
           echo "s2_dup=$S2_DUP" >> $GITHUB_OUTPUT
 
-          if [ "$CLAUDE" -ge 10 ] && [ "$THRASH" -eq 1 ] && [ "$DUPMSG" -eq 1 ]; then
-            echo "::warning::Loop guard tripped: 10+ Claude commits AND file thrash AND message duplication detected."
+          # S3: CI failure streak — same workflow failing repeatedly on this branch
+          S3=0
+          FAIL=0
+          if command -v gh >/dev/null 2>&1 && [ -n "$GH_TOKEN" ]; then
+            FAIL=$(gh run list --workflow="$GITHUB_WORKFLOW" --branch="$GITHUB_REF_NAME" \
+              --limit 6 --json conclusion -q '[.[] | select(.conclusion=="failure")] | length' 2>/dev/null || echo 0)
+            if [ "${FAIL:-0}" -ge 5 ]; then S3=1; fi
+            echo "S3: failures_in_6=$FAIL"
+          else
+            echo "S3: skipped (gh or token unavailable)"
+          fi
+          echo "s3_fail=$FAIL" >> $GITHUB_OUTPUT
+
+          if { [ "$CLAUDE" -ge 10 ] && [ "$THRASH" -eq 1 ] && [ "$DUPMSG" -eq 1 ]; } || [ "$S3" -eq 1 ]; then
+            echo "::warning::Loop guard tripped: (thrash+dup) or CI failure streak detected."
             echo "go=false" >> $GITHUB_OUTPUT
-            echo "halt_reason=thrash+dup" >> $GITHUB_OUTPUT
+            if [ "$S3" -eq 1 ]; then
+              echo "halt_reason=ci_failure_streak" >> $GITHUB_OUTPUT
+            else
+              echo "halt_reason=thrash+dup" >> $GITHUB_OUTPUT
+            fi
           else
             echo "go=true" >> $GITHUB_OUTPUT
           fi
@@ -98,7 +119,7 @@ jobs:
             const body = [
               `### 🛑 [auto-halted] ${context.workflow} run #${context.runNumber}`,
               '',
-              `Loop guard tripped: 10+ consecutive Claude commits AND file-set churn AND commit-message duplication (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions, dup=${{ steps.check.outputs.s2_dup }}).`,
+              `Loop guard tripped: (10+ Claude commits AND file-set churn AND message duplication) OR CI failure streak (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions, dup=${{ steps.check.outputs.s2_dup }}, ci_failures_in_6=${{ steps.check.outputs.s3_fail }}).`,
               '',
               'Last 10 commits:',
               '```',
