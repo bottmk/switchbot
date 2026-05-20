@@ -13,8 +13,8 @@ export const DASHBOARD_HTML = `<!doctype html>
     h1 { font-size: 1.2rem; margin: 0 1rem 0 0; }
     select, button { font: inherit; padding: .3rem .5rem; }
     .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin: .8rem 0; font-size: .9rem; opacity: .85; }
-    .chart-wrap { position: relative; height: 38vh; min-height: 240px; margin-bottom: 1rem; }
-    @media (max-width: 600px) { .chart-wrap { height: 30vh; } }
+    .chart-wrap { position: relative; height: 38vh; height: 38dvh; min-height: 240px; margin-bottom: 1rem; }
+    @media (max-width: 600px) { .chart-wrap { height: 32vh; height: 32dvh; min-height: 220px; } }
     .err { color: #c33; font-size: .85rem; margin-top: .3rem; }
   </style>
 </head>
