@@ -27,7 +27,32 @@ jobs:
           node-version: '22'
       - run: npm install --no-audit --no-fund
 
-      - name: Download CSVs from R2
+      - name: Download missing CSVs from R2 (auto)
+        if: inputs.r2_keys == ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          mkdir -p data/historical
+          # Iterate over keys of _mapping.json — these are the expected CSV filenames.
+          # If a file is already committed in the repo, skip; otherwise try R2.
+          node -e "console.log(Object.keys(JSON.parse(require('fs').readFileSync('data/historical/_mapping.json','utf8'))).join('\n'))" \
+            | while IFS= read -r FILENAME; do
+                [ -z "$FILENAME" ] && continue
+                LOCAL="data/historical/$FILENAME"
+                if [ -f "$LOCAL" ]; then
+                  echo "Local present, skipping R2: $FILENAME"
+                  continue
+                fi
+                echo "Downloading from R2: $FILENAME"
+                if ! npx wrangler r2 object get "switchbot-csv-staging/$FILENAME" --file "$LOCAL" 2>&1 | tee -a /tmp/r2.log; then
+                  echo "::warning::R2 download failed for $FILENAME — will be skipped by importer"
+                  rm -f "$LOCAL"
+                fi
+              done
+          ls -la data/historical/
+
+      - name: Download CSVs from R2 (explicit keys)
         if: inputs.r2_keys != ''
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
