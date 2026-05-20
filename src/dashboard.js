@@ -159,7 +159,7 @@ function apply(rows) {
       label: k,
       borderColor: colors[i % colors.length],
       backgroundColor: colors[i % colors.length] + '33',
-      data: list.map(r => ({ x: new Date(r.timestamp.replace(' ', 'T') + '+09:00'), y: r[yKey] })),
+      data: list.map(r => ({ x: new Date(r.timestamp.replace(' ', 'T') + '+09:00').getTime(), y: r[yKey] })),
     }));
   try {
     temp.data.datasets  = datasets('temperature');
