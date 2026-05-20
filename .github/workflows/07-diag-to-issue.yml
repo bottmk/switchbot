@@ -30,6 +30,9 @@ jobs:
     outputs:
       go: ${{ steps.check.outputs.go }}
       recent: ${{ steps.check.outputs.recent }}
+      s1_files: ${{ steps.check.outputs.s1_files }}
+      s1_net: ${{ steps.check.outputs.s1_net }}
+      s2_dup: ${{ steps.check.outputs.s2_dup }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,10 +67,20 @@ jobs:
           THRASH=0
           if [ "$S1_COMMITS" -ge 8 ] && [ "$S1_FILES" -le 3 ] && [ "$S1_NET" -lt 20 ]; then THRASH=1; fi
 
-          if [ "$CLAUDE" -ge 10 ] && [ "$THRASH" -eq 1 ]; then
-            echo "::warning::Loop guard tripped: 10+ Claude commits AND file thrash detected."
+          # S2: commit message duplication over last 6 Claude commits
+          N2=6
+          S2_DUP=$(git log -n $N2 --author='noreply@anthropic.com' --no-merges --format='%s' \
+            | sed -E 's/[0-9a-f]{7,}//g; s/[[:space:]]+/ /g' | tr 'A-Z' 'a-z' \
+            | sort | uniq -c | sort -rn | awk 'NR==1{print $1+0}')
+          DUPMSG=0
+          if [ "${S2_DUP:-0}" -ge 4 ]; then DUPMSG=1; fi
+          echo "S2: dup_count=$S2_DUP"
+          echo "s2_dup=$S2_DUP" >> $GITHUB_OUTPUT
+
+          if [ "$CLAUDE" -ge 10 ] && [ "$THRASH" -eq 1 ] && [ "$DUPMSG" -eq 1 ]; then
+            echo "::warning::Loop guard tripped: 10+ Claude commits AND file thrash AND message duplication detected."
             echo "go=false" >> $GITHUB_OUTPUT
-            echo "halt_reason=thrash" >> $GITHUB_OUTPUT
+            echo "halt_reason=thrash+dup" >> $GITHUB_OUTPUT
           else
             echo "go=true" >> $GITHUB_OUTPUT
           fi
@@ -85,7 +98,7 @@ jobs:
             const body = [
               `### 🛑 [auto-halted] ${context.workflow} run #${context.runNumber}`,
               '',
-              `Loop guard tripped: 10+ consecutive Claude commits AND file-set churn detected (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions).`,
+              `Loop guard tripped: 10+ consecutive Claude commits AND file-set churn AND commit-message duplication (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions, dup=${{ steps.check.outputs.s2_dup }}).`,
               '',
               'Last 10 commits:',
               '```',
