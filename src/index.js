@@ -80,7 +80,11 @@ export default {
 
 async function handleData(env, url) {
   const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours') || '24', 10), 1), 24 * 30);
-  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '5000', 10), 1), 20000);
+  // Default LIMIT must cover the longest selectable range. 7 days × N devices ×
+  // 6/h (10-min cron) + webhook rows can easily exceed an old 500-row cap and
+  // silently truncate to ~24h worth when ORDER BY timestamp ASC. Use a default
+  // that comfortably covers 30d × ~10 devices × ~12/h with headroom.
+  const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '50000', 10), 1), 100000);
   const room = url.searchParams.get('room');
 
   // JST cutoff string (stored timestamps are JST 'YYYY-MM-DD HH:MM:SS')
