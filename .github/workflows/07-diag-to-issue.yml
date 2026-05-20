@@ -94,8 +94,9 @@ jobs:
           fi
           echo "s3_fail=$FAIL" >> $GITHUB_OUTPUT
 
-          if { [ "$CLAUDE" -ge 10 ] && [ "$THRASH" -eq 1 ] && [ "$DUPMSG" -eq 1 ]; } || [ "$S3" -eq 1 ]; then
-            echo "::warning::Loop guard tripped: (thrash+dup) or CI failure streak detected."
+          # Author count ($CLAUDE) is kept in output for visibility only — no longer a gate.
+          if { [ "$THRASH" -eq 1 ] && [ "$DUPMSG" -eq 1 ]; } || [ "$S3" -eq 1 ]; then
+            echo "::warning::Loop guard tripped: (S1 thrash AND S2 msg-dup) OR S3 CI failure streak."
             echo "go=false" >> $GITHUB_OUTPUT
             if [ "$S3" -eq 1 ]; then
               echo "halt_reason=ci_failure_streak" >> $GITHUB_OUTPUT
@@ -119,7 +120,7 @@ jobs:
             const body = [
               `### 🛑 [auto-halted] ${context.workflow} run #${context.runNumber}`,
               '',
-              `Loop guard tripped: (10+ Claude commits AND file-set churn AND message duplication) OR CI failure streak (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions, dup=${{ steps.check.outputs.s2_dup }}, ci_failures_in_6=${{ steps.check.outputs.s3_fail }}).`,
+              `Loop guard tripped: (S1 file-set churn AND S2 commit-message duplication) OR S3 CI failure streak (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions, dup=${{ steps.check.outputs.s2_dup }}, ci_failures_in_6=${{ steps.check.outputs.s3_fail }}).`,
               '',
               'Last 10 commits:',
               '```',
