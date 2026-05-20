@@ -2,6 +2,11 @@ name: "08: Import CSV history → D1"
 
 on:
   workflow_dispatch:
+    inputs:
+      r2_keys:
+        description: "Comma-separated R2 object keys to download from switchbot-csv-staging before import (leave blank to skip R2)"
+        required: false
+        default: ""
 
 concurrency:
   group: import-${{ github.ref }}
@@ -21,6 +26,23 @@ jobs:
         with:
           node-version: '22'
       - run: npm install --no-audit --no-fund
+
+      - name: Download CSVs from R2
+        if: inputs.r2_keys != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          mkdir -p data/historical
+          IFS=',' read -ra KEYS <<< "${{ inputs.r2_keys }}"
+          for KEY in "${KEYS[@]}"; do
+            KEY="$(echo "$KEY" | xargs)"  # trim whitespace
+            [ -z "$KEY" ] && continue
+            LOCAL="data/historical/$(basename "$KEY")"
+            echo "Downloading R2 object: $KEY -> $LOCAL"
+            npx wrangler r2 object get "switchbot-csv-staging/$KEY" --file "$LOCAL"
+          done
+          ls -la data/historical/
 
       - name: Apply schema additions (idempotent)
         env:
