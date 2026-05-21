@@ -90,13 +90,18 @@ function mkChart(ctx, ylabel) {
             maxTicksLimit: 7,
             callback: function(value) {
               const d = new Date(value);
+              const hoursWin = parseInt(document.getElementById('range').value, 10);
+              const mo = String(d.getMonth()+1).padStart(2,'0');
+              const da = String(d.getDate()).padStart(2,'0');
               const h = String(d.getHours()).padStart(2,'0');
               const m = String(d.getMinutes()).padStart(2,'0');
-              // Show date when crossing midnight; otherwise just HH:mm
-              if (d.getHours() === 0 && d.getMinutes() === 0) {
-                return \`\${d.getMonth()+1}/\${d.getDate()}\`;
+              if (hoursWin <= 24) {
+                return \`\${h}:\${m}\`;
+              } else if (hoursWin <= 72) {
+                return \`\${mo}/\${da} \${h}:\${m}\`;
+              } else {
+                return \`\${mo}/\${da}\`;
               }
-              return \`\${h}:\${m}\`;
             },
           },
         },
