@@ -88,6 +88,7 @@ function mkChart(ctx, ylabel) {
             minRotation: 0,
             autoSkip: true,
             maxTicksLimit: 7,
+            autoSkipPadding: 12,
             callback: function(value) {
               const d = new Date(value);
               const hoursWin = parseInt(document.getElementById('range').value, 10);
@@ -98,7 +99,7 @@ function mkChart(ctx, ylabel) {
               if (hoursWin <= 24) {
                 return \`\${h}:\${m}\`;
               } else if (hoursWin <= 72) {
-                return \`\${mo}/\${da} \${h}:\${m}\`;
+                return [\`\${mo}/\${da}\`, \`\${h}:\${m}\`];
               } else {
                 return \`\${mo}/\${da}\`;
               }
