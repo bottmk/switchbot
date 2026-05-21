@@ -16,6 +16,9 @@ export const DASHBOARD_HTML = `<!doctype html>
     .chart-wrap { position: relative; height: 38vh; height: 38dvh; min-height: 240px; margin-bottom: 1rem; }
     @media (max-width: 600px) { .chart-wrap { height: 32vh; height: 32dvh; min-height: 220px; } }
     .err { color: #c33; font-size: .85rem; margin-top: .3rem; }
+    #legend { display: flex; flex-wrap: wrap; gap: 0.8rem; margin: 0.5rem 0 0.8rem; font-size: 0.85rem; }
+    #legend .item { display: inline-flex; align-items: center; gap: 0.3rem; }
+    #legend .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(127,127,127,0.5); }
   </style>
 </head>
 <body>
@@ -43,6 +46,7 @@ export const DASHBOARD_HTML = `<!doctype html>
 
   <div class="stats" id="stats">読み込み中...</div>
   <div class="err" id="err"></div>
+  <div id="legend"></div>
 
   <div class="chart-wrap"><canvas id="temp"></canvas></div>
   <div class="chart-wrap"><canvas id="humid"></canvas></div>
@@ -65,7 +69,7 @@ function mkChart(ctx, ylabel) {
       responsive: true,
       plugins: {
         title: { display: false },
-        legend: { position: 'bottom' },
+        legend: { display: false },
         tooltip: {
           callbacks: {
             title: (items) => {
@@ -167,6 +171,11 @@ function apply(rows) {
       backgroundColor: colors[i % colors.length] + '33',
       data: list.map(r => ({ x: new Date(r.timestamp.replace(' ', 'T') + '+09:00').getTime(), y: r[yKey] })),
     }));
+  const lg = document.getElementById('legend');
+  lg.innerHTML = Object.keys(groups).map((k, i) => {
+    const c = colors[i % colors.length];
+    return \`<span class="item"><span class="swatch" style="background:\${c}33;border-color:\${c}"></span>\${k}</span>\`;
+  }).join('');
   try {
     temp.data.datasets  = datasets('temperature');
     humid.data.datasets = datasets('humidity');
