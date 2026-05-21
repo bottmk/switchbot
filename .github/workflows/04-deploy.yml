@@ -2,9 +2,18 @@ name: "04: Deploy Worker"
 
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ["01: Diagnose"]
+    types: [completed]
+    branches: [claude/switchbot-turso-setup-nk30n]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
