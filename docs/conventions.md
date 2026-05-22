@@ -77,6 +77,22 @@ test('lookupRoom normalizes MAC formats', () => {
     else echo "go=true" >> $GITHUB_OUTPUT; fi
 ```
 
+#### Loop guard 設計の進化(author-count → 複合シグナル)
+
+author 連続数だけだと「Claude が真面目に複数回 push しているだけ」でも止まり
+過敏。本プロジェクトでは次の複合判定に置き換えた:
+
+- **Halt 条件**: `(S1 file churn) ∧ (S2 message dup)` ∨ **S3**(CI 失敗連鎖)
+  - **S1**(微小変更の連鎖)= 直近 8 commit が ≤3 files 変更 / <20 net insertions
+  - **S2**(メッセージ重複)= 直近 6 commit の msg を正規化(数字・hash 除去)
+    した結果、4/6 以上が同一 skeleton
+  - **S3**(CI 連鎖失敗)= 直近 6 runs のうち 5+ が failure
+    (`permissions: actions: read` が必要)
+
+教訓: **連続自走を許す前提なら author-count gate は廃止**。意味のある進捗が
+止まっている事を検出する方が筋が良い。S1∧S2 は「同じ場所をいじり続けて
+いる」状態、S3 は「明確に壊れて回復していない」状態を捉える。
+
 ### Concurrency
 `cancel-in-progress: true` で重複 run を自動キャンセル。
 
@@ -154,6 +170,121 @@ GitHub Issue/PR body は自動マスクされないので必須。
 
 → deploy.yml の順序は **「Deploy → Set Secrets」**。Deploy が
 wrangler.toml を再適用して古い Var を消してから Secret を put する。
+
+### 静的マッピング Secret は持たない(auto-discover 推奨)
+
+Secret に「deviceId → 部屋名」のような静的マッピング JSON を持たせると、
+新しいエンティティが追加されるたびに Secret を更新する必要があり、
+未登録 entity が `unknown` で fall-through する事故が起きる。
+
+→ 起動時に外部 API から auto-discover し、結果を **Worker メモリに cache**
+(module-scope の `let cache = null` + TTL)。Secret には API token だけ置く。
+fail-open / fail-closed の方針(token 失敗時に空配列で続行するか落とすか)を
+明示する。
+
+### Auto-deploy(`workflow_run`)の bootstrap 落とし穴
+
+`workflow_run` listener は **default branch(main)に該当 workflow ファイルが
+存在しないと発火しない**。tracker PR を merge せず永続化する設計だと、main
+側の workflow ディレクトリが空でリスナーが永遠に来ない。
+
+打ち手:
+- **listener workflow だけ別 PR で main に bootstrap merge** する。実体の
+  feature 作業は tracker PR に残したままで OK。
+- `actions/checkout@v4` に **`ref: ${{ github.event.workflow_run.head_branch }}`
+  を明示**。これを忘れると(空っぽの)main を checkout して何もデプロイ
+  されない silent failure になる。
+
+```yaml
+on:
+  workflow_run:
+    workflows: ["00-test"]
+    types: [completed]
+    branches: [claude/**]
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+```
+
+## データ取り込みの冪等性とリカバリ
+
+### 既存 DB の整合性復旧(backfill)パターン
+
+スキーマ変更や新フィールド追加後、古い行に欠落値を後追いで埋める必要が出る。
+本番ロジックに混ぜず、**専用 workflow に隔離**する:
+
+- 一回限り運用 → `on: workflow_dispatch` のみ(push/cron に晒さない)
+- **idempotent**: `WHERE col IS NULL OR col = 'unknown'` 等で対象を限定。
+  再実行しても二重更新されない形に書く
+- 別ファイル(例: `09-backfill-room.yml`)として置き、誤発火を物理的に防ぐ
+- 完了後も削除せずレポジトリに残す(過去どんな修復をしたかの証跡)
+
+### CSV / 一括 import の冪等性 3 層
+
+外部からの一括投入は、再実行・部分失敗・重複の全てに耐える必要がある。
+**1 層だけだと必ず崩れる**。多層防御で組む:
+
+1. **DB-level** — `UNIQUE INDEX(natural_key)` を張る。最終防衛線
+2. **文-level** — `INSERT OR IGNORE INTO ...`(SQLite/D1)を使う。
+   D1 はバッチ内 1 行失敗で残りも巻き戻るので OR IGNORE が安全
+3. **filter-level** — `cutoff = MIN(timestamp) WHERE source IN (...)` を
+   import 開始時に取り、CSV 側で「cutoff より新しい行は触らない」等の
+   eligible row 絞り込みをする。DB を当てずに不要書き込みを削れる
+
+教訓: filter だけだと UNIQUE がないので競合時に二重入る。UNIQUE だけだと
+無駄 write が quota を食う。3 層揃えると quota にも優しく、再開可能。
+
+### 大容量データの R2 staging パターン
+
+GitHub は 50MB ソフト警告 / 100MB ハードブロック。大ファイル(履歴 CSV、
+バックアップ、ML データ等)を **git に直接置かない**。
+
+推奨フロー:
+1. ローカルから **R2 にアップロード**(`wrangler r2 object put`)
+2. workflow 内で必要時に `wrangler r2 object get` で取得し、既存 importer に
+   そのまま食わせる
+3. `_mapping.json`(あるいは index.json)のキーを「期待される入力ファイル
+   一覧」として転用 → ローカル不在なら R2 から自動 fallback 取得
+
+→ git の肥大化を回避しつつ、importer のコードは「ローカルパス前提」のまま
+で済む。LFS / Release attachment も同じ用途に使えるが、R2 は workflow から
+の get/put が一番素直。
+
+### D1 free plan(あるいは類似の write quota)制約
+
+D1 free は **100K writes/日**。一括 import で軽く超える。対策:
+
+- **数日に分けて投入**(filter-level cutoff があれば部分実行で安全)
+- Workers Paid($5/月)に upgrade
+- script 側で **quota 超過エラーを検出して partial 完了として終了**、
+  exit code を分けて再開可能にする。silent に止まるのが最悪
+
+教訓: 「全部入れる前提」で書くと quota 越え時に途中で死んで状態不明に
+なる。**部分実行 → 続きから再開可能**を最初から組み込む。
+
+## Dashboard / フロントエンドの落とし穴
+
+### Chart.js + 時系列
+
+- `parsing: false` を使う場合、x 値は **数値 ms**(`.getTime()`)で渡す。
+  Date オブジェクトをそのまま渡すと time scale が誤動作する
+- 期間別の x 軸ラベルは callback で window 幅 / 範囲を判定して
+  format 切り替え(時:分 / 月/日 / 年など)
+- 複数チャートで同じ系列を表示する場合、Chart.js の凡例を全部非表示にして
+  **HTML 側で 1 つ共有凡例**を作る。各チャートに凡例が出ると場所を食う
+
+### モバイルの viewport
+
+`100vh` は iOS Safari / Android Chrome のアドレスバー伸縮で動的に縮む。
+**`100dvh` + `min-height` 両方指定**で fallback も担保する:
+
+```css
+.app { height: 100vh; height: 100dvh; min-height: 100dvh; }
+```
 
 ## 受け渡し時のセキュリティ
 
@@ -253,3 +384,33 @@ PR コメントの履歴が事実上の「実験ノート」になる。タイ�
   Loop guard 必須。
 
 個人運用なら **Lv2** が良いバランス。デプロイは手動コントロールを残す。
+
+## Agent Teams / sub-agent の使い分け
+
+Claude Code on the web の Agent Teams(MCP teammate)は、session ID rotation
+(context compaction)が起きると teams MCP 接続が切れる。**長セッション中の
+teammate は途中で死ぬ**前提。
+
+打ち手:
+- **長期作業は ephemeral sub-agent**(Agent tool)で運用。タスクごとに
+  プロンプト完結型で投げる。state は parent thread / docs に残す
+- 永続 teammate を使うなら **短い fresh session で 1 サイクル完結**させる
+- 重い実装は parent thread でやらず、必ず sub-agent に投げる。parent は
+  コーディネーションと chat に専念
+
+## Handoff doc の構造(複数セッションをまたぐ運用)
+
+セッション間で文脈を失わないために、ドキュメントを役割で分割する:
+
+- **`CLAUDE.md`** — TOC + 運用ルール + 直近 snapshot のみ。**80 行以内**に
+  抑える。新セッションで auto-load されるので、ここが膨らむと毎回コストに
+  なる
+- **`docs/STATUS.md`** — live 状態(branch / 最新 commit / pending タスク /
+  open PR)。セッション終わりに必ず更新
+- **`docs/DESIGN.md`** — 判断履歴。「なぜそうしたか」をここに残す
+- **`docs/WORKFLOWS.md`** — workflow ファイル一覧と用途
+- 大物の意思決定 / 制約調査は **専用 doc に切り出して** CLAUDE.md から
+  リンク参照(例: `docs/AGENT_TEAMS_NOTES.md`)
+
+教訓: CLAUDE.md に全部書くと「auto-load で毎回読まされるが古い」状態に
+なりがち。**入口(CLAUDE.md)は薄く、実体は別ファイル**。
