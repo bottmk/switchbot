@@ -20,5 +20,8 @@ database_id = "0688f834-c392-46f9-8206-6daa5e3d5abf"
 #   wrangler secret put SWITCHBOT_API_TOKEN
 #   wrangler secret put SWITCHBOT_API_SECRET
 #   wrangler secret put SWITCHBOT_WEBHOOK_SECRET
+#   wrangler secret put DASHBOARD_PASSWORD
 # The webhook URL registered with SwitchBot must be:
 #   https://<your-worker>.workers.dev/webhook/<SWITCHBOT_WEBHOOK_SECRET>
+# DASHBOARD_PASSWORD gates the "/" dashboard and "/data" API (see src/auth.js).
+# Login sets a 30-day signed session cookie so it isn't re-entered every visit.

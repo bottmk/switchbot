@@ -8,6 +8,7 @@ import {
 } from './switchbot.js';
 import { bulkInsertLogs } from './d1.js';
 import { DASHBOARD_HTML } from './dashboard.js';
+import { isAuthed, handleLogin, handleLogout, loginHtml } from './auth.js';
 
 export default {
   async scheduled(event, env, ctx) {
@@ -53,13 +54,30 @@ export default {
 
     try {
       if (request.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+        if (!(await isAuthed(env, request))) {
+          return new Response(loginHtml(), {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+          });
+        }
         return new Response(DASHBOARD_HTML, {
           status: 200,
           headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
         });
       }
 
+      if (request.method === 'POST' && pathname === '/login') {
+        return await handleLogin(env, request);
+      }
+
+      if (request.method === 'GET' && pathname === '/logout') {
+        return handleLogout();
+      }
+
       if (request.method === 'GET' && pathname === '/data') {
+        if (!(await isAuthed(env, request))) {
+          return new Response('Unauthorized', { status: 401 });
+        }
         return await handleData(env, url);
       }
 
