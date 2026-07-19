@@ -2,10 +2,18 @@ name: "04: Deploy Worker"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/switchbot-continuation-90uc17]
+    paths:
+      - 'src/**'
+      - 'wrangler.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/04-deploy.yml'
   workflow_run:
     workflows: ["01: Diagnose"]
     types: [completed]
-    branches: [claude/switchbot-turso-setup-nk30n]
+    branches: [claude/switchbot-turso-setup-nk30n, claude/switchbot-continuation-90uc17]
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -13,7 +21,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +31,19 @@ jobs:
           node-version: '22'
 
       - run: npm install --no-audit --no-fund
+
+      - name: Sync CONTROL_SECRET (enables /control; skipped if unset)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VAL: ${{ secrets.CONTROL_SECRET }}
+        run: |
+          if [ -n "$VAL" ]; then
+            printf '%s' "$VAL" | npx wrangler secret put CONTROL_SECRET
+            echo "CONTROL_SECRET synced to Worker (control enabled)."
+          else
+            echo "CONTROL_SECRET not set in repo secrets; skipping (control stays disabled)."
+          fi
 
       - name: Deploy Worker
         env:

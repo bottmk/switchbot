@@ -131,6 +131,111 @@ export async function fetchDeviceList(env, { force = false } = {}) {
   return list;
 }
 
+/**
+ * Fetches /v1.1/devices and returns the FULL inventory WITHOUT the meter-type
+ * filter — physical devices and IR remotes alike. Read-only; used by the
+ * /devices/all diagnostic endpoint to discover controllable devices (e.g. a
+ * circulator) and their metadata (deviceType, hubDeviceId, enableCloudService).
+ * Deliberately does NOT read or write the meter-list cache used by
+ * fetchDeviceList(), so the cron polling path is completely unaffected.
+ * @param {Record<string, string>} env
+ * @returns {Promise<{deviceList: Array, infraredRemoteList: Array}>}
+ */
+export async function fetchAllDevices(env) {
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch('https://api.switch-bot.com/v1.1/devices', {
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`SwitchBot API ${response.status}: ${await response.text()}`);
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    throw new Error(`SwitchBot API statusCode ${json.statusCode}: ${json.message}`);
+  }
+  const deviceList = (json.body?.deviceList || []).map((d) => ({
+    deviceId: d.deviceId,
+    deviceName: d.deviceName,
+    deviceType: d.deviceType,
+    hubDeviceId: d.hubDeviceId,
+    enableCloudService: d.enableCloudService,
+  }));
+  const infraredRemoteList = (json.body?.infraredRemoteList || []).map((d) => ({
+    deviceId: d.deviceId,
+    deviceName: d.deviceName,
+    remoteType: d.remoteType,
+    hubDeviceId: d.hubDeviceId,
+  }));
+  return { deviceList, infraredRemoteList };
+}
+
+/**
+ * GETs the full `/status` body for ANY device (not just meters) and returns
+ * the raw `body` object, so callers can inspect device-specific fields such
+ * as a circulator's `mode` / `fanSpeed` / `power`. Read-only.
+ * @param {Record<string, string>} env
+ * @param {string} deviceId
+ * @returns {Promise<Record<string, any>>}
+ */
+export async function fetchRawStatus(env, deviceId) {
+  const apiId = String(deviceId || '').trim();
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${apiId}/status`, {
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`SwitchBot API ${response.status}: ${await response.text()}`);
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    throw new Error(`SwitchBot API statusCode ${json.statusCode}: ${json.message}`);
+  }
+  return json.body;
+}
+
+/**
+ * POSTs a command to `/v1.1/devices/{id}/commands` (signed). Generic — the
+ * caller supplies command/parameter/commandType, so it works for any
+ * controllable SwitchBot device. This is a WRITE that actuates hardware.
+ * Returns the parsed API `body`; throws on HTTP or API-level error.
+ * @param {Record<string, string>} env
+ * @param {string} deviceId
+ * @param {{command: string, parameter?: string, commandType?: string}} cmd
+ * @returns {Promise<Record<string, any>>}
+ */
+export async function sendDeviceCommand(env, deviceId, { command, parameter = 'default', commandType = 'command' }) {
+  const apiId = String(deviceId || '').trim();
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${apiId}/commands`, {
+    method: 'POST',
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ command, parameter, commandType }),
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok || json.statusCode !== 100) {
+    throw new Error(`SwitchBot command failed: HTTP ${response.status} statusCode ${json.statusCode} ${json.message || ''}`);
+  }
+  return json.body ?? {};
+}
+
 /** Look up a device's display name from cache; falls back to short id. */
 export function lookupDeviceName(devices, deviceMac) {
   const target = normalizeMac(deviceMac);

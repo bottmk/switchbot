@@ -1,5 +1,8 @@
 import {
   fetchDeviceList,
+  fetchAllDevices,
+  fetchRawStatus,
+  sendDeviceCommand,
   fetchDeviceStatus,
   lookupDeviceName,
   calcAbsoluteHumidity,
@@ -9,6 +12,8 @@ import {
 import { bulkInsertLogs } from './d1.js';
 import { DASHBOARD_HTML } from './dashboard.js';
 import { isAuthed, handleLogin, handleLogout, loginHtml } from './auth.js';
+import { getFanConfig, saveFanConfig, validateFanConfig, decideFanAction } from './config.js';
+import { SETTINGS_HTML } from './settings.js';
 
 export default {
   async scheduled(event, env, ctx) {
@@ -45,6 +50,21 @@ export default {
     if (rows.length > 0) {
       await bulkInsertLogs(env.DB, rows);
     }
+
+    // Fan automation (Step 3): evaluate the configured rule against the fresh
+    // readings and actuate the fan. Wrapped so it can never break logging.
+    const tempByDevice = {};
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === 'fulfilled') {
+        tempByDevice[devices[i].deviceId] = results[i].value.temperature;
+      }
+    }
+    try {
+      await runFanAutomation(env, tempByDevice);
+    } catch (err) {
+      console.log(`fan automation error: ${err && err.stack ? err.stack : err}`);
+    }
+
     console.log(`scheduled: ${rows.length} ok, ${failures} failed (devices=${devices.length})`);
   },
 
@@ -81,6 +101,40 @@ export default {
         return await handleData(env, url);
       }
 
+      if (request.method === 'GET' && pathname === '/devices/all') {
+        const devices = await fetchAllDevices(env);
+        return new Response(JSON.stringify(devices, null, 2), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+        });
+      }
+
+      if (request.method === 'GET' && pathname === '/devices/status') {
+        const id = url.searchParams.get('id');
+        if (!id) return jsonResponse({ ok: false, error: 'missing ?id=<deviceId>' }, 400);
+        const status = await fetchRawStatus(env, id);
+        return jsonResponse({ ok: true, deviceId: id, status }, 200);
+      }
+
+      if (pathname === '/control' && (request.method === 'GET' || request.method === 'POST')) {
+        return await handleControl(env, request, url);
+      }
+
+      if (request.method === 'GET' && pathname === '/settings') {
+        return new Response(SETTINGS_HTML, {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+        });
+      }
+
+      if (request.method === 'GET' && pathname === '/config') {
+        return jsonResponse({ ok: true, config: await getFanConfig(env.DB) }, 200);
+      }
+
+      if (request.method === 'POST' && pathname === '/config') {
+        return await handleConfigWrite(env, request);
+      }
+
       if (request.method === 'POST' && pathname.startsWith('/webhook/')) {
         return await handleWebhook(env, request);
       }
@@ -95,6 +149,93 @@ export default {
     }
   },
 };
+
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj, null, 2), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+}
+
+/**
+ * Manual device control (Step 2 "walk"). Fail-safe: if CONTROL_SECRET is not
+ * configured the endpoint is fully disabled (403), so a public deploy never
+ * actuates hardware until the operator opts in by setting the secret. When
+ * enabled, every request must carry the matching `key`.
+ *
+ * GET  /control?id=<deviceId>&cmd=turnOn&key=<secret>
+ * POST /control  {"deviceId","command","parameter","commandType","key"}
+ */
+async function handleControl(env, request, url) {
+  if (!env.CONTROL_SECRET) {
+    return jsonResponse({ ok: false, error: 'control disabled: CONTROL_SECRET is not set' }, 403);
+  }
+  const q = url.searchParams;
+  let body = {};
+  if (request.method === 'POST') {
+    body = await request.json().catch(() => ({}));
+  }
+  const key = body.key ?? q.get('key');
+  if (key !== env.CONTROL_SECRET) {
+    return jsonResponse({ ok: false, error: 'forbidden: bad or missing key' }, 403);
+  }
+  const deviceId = body.deviceId ?? q.get('id');
+  const command = body.command ?? q.get('cmd') ?? 'turnOn';
+  const parameter = body.parameter ?? q.get('parameter') ?? 'default';
+  const commandType = body.commandType ?? q.get('commandType') ?? 'command';
+  if (!deviceId) return jsonResponse({ ok: false, error: 'missing deviceId (id)' }, 400);
+
+  const result = await sendDeviceCommand(env, deviceId, { command, parameter, commandType });
+  return jsonResponse({ ok: true, deviceId, command, parameter, result }, 200);
+}
+
+/** Saves fan-automation config from the /settings UI. Requires CONTROL_SECRET. */
+async function handleConfigWrite(env, request) {
+  if (!env.CONTROL_SECRET) {
+    return jsonResponse({ ok: false, error: 'control disabled: CONTROL_SECRET is not set' }, 403);
+  }
+  const body = await request.json().catch(() => ({}));
+  if ((body.key ?? '') !== env.CONTROL_SECRET) {
+    return jsonResponse({ ok: false, error: 'forbidden: bad or missing key' }, 403);
+  }
+  const config = validateFanConfig(body);
+  await saveFanConfig(env.DB, config, jstTimestamp());
+  return jsonResponse({ ok: true, config }, 200);
+}
+
+/**
+ * Evaluates the stored fan-automation rule against the latest sensor reading
+ * and, if the fan is not already in the desired state, sends the command.
+ * Reading the fan's actual power first makes the loop idempotent (no repeated
+ * commands) and respects manual changes made within the hysteresis band.
+ */
+async function runFanAutomation(env, tempByDevice) {
+  const config = await getFanConfig(env.DB);
+  if (!config.enabled || !config.fanDeviceId || !config.sensorDeviceId) return;
+
+  const sensorId = String(config.sensorDeviceId).toUpperCase().replace(/[^0-9A-F]/g, '');
+  const temperature = tempByDevice[sensorId];
+  const jstHour = new Date(Date.now() + 9 * 3600 * 1000).getUTCHours();
+
+  const desired = decideFanAction(config, temperature, jstHour);
+  if (!desired) return;
+
+  let power;
+  try {
+    const status = await fetchRawStatus(env, config.fanDeviceId);
+    power = status && status.power;
+  } catch (err) {
+    console.log(`automation: status fetch failed: ${err}`);
+    return;
+  }
+  if (power === desired) return; // already in the desired state — no command
+
+  const command = desired === 'on' ? 'turnOn' : 'turnOff';
+  await sendDeviceCommand(env, config.fanDeviceId, { command });
+  console.log(
+    `automation: ${command} fan=${config.fanDeviceId} temp=${temperature} on=${config.onC} off=${config.offC} night=${config.night} hour=${jstHour}`,
+  );
+}
 
 async function handleData(env, url) {
   const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours') || '24', 10), 1), 24 * 30);
