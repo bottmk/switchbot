@@ -131,6 +131,50 @@ export async function fetchDeviceList(env, { force = false } = {}) {
   return list;
 }
 
+/**
+ * Fetches /v1.1/devices and returns the FULL inventory WITHOUT the meter-type
+ * filter — physical devices and IR remotes alike. Read-only; used by the
+ * /devices/all diagnostic endpoint to discover controllable devices (e.g. a
+ * circulator) and their metadata (deviceType, hubDeviceId, enableCloudService).
+ * Deliberately does NOT read or write the meter-list cache used by
+ * fetchDeviceList(), so the cron polling path is completely unaffected.
+ * @param {Record<string, string>} env
+ * @returns {Promise<{deviceList: Array, infraredRemoteList: Array}>}
+ */
+export async function fetchAllDevices(env) {
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch('https://api.switch-bot.com/v1.1/devices', {
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`SwitchBot API ${response.status}: ${await response.text()}`);
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    throw new Error(`SwitchBot API statusCode ${json.statusCode}: ${json.message}`);
+  }
+  const deviceList = (json.body?.deviceList || []).map((d) => ({
+    deviceId: d.deviceId,
+    deviceName: d.deviceName,
+    deviceType: d.deviceType,
+    hubDeviceId: d.hubDeviceId,
+    enableCloudService: d.enableCloudService,
+  }));
+  const infraredRemoteList = (json.body?.infraredRemoteList || []).map((d) => ({
+    deviceId: d.deviceId,
+    deviceName: d.deviceName,
+    remoteType: d.remoteType,
+    hubDeviceId: d.hubDeviceId,
+  }));
+  return { deviceList, infraredRemoteList };
+}
+
 /** Look up a device's display name from cache; falls back to short id. */
 export function lookupDeviceName(devices, deviceMac) {
   const target = normalizeMac(deviceMac);

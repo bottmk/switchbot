@@ -1,5 +1,6 @@
 import {
   fetchDeviceList,
+  fetchAllDevices,
   fetchDeviceStatus,
   lookupDeviceName,
   calcAbsoluteHumidity,
@@ -61,6 +62,14 @@ export default {
 
       if (request.method === 'GET' && pathname === '/data') {
         return await handleData(env, url);
+      }
+
+      if (request.method === 'GET' && pathname === '/devices/all') {
+        const devices = await fetchAllDevices(env);
+        return new Response(JSON.stringify(devices, null, 2), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+        });
       }
 
       if (request.method === 'POST' && pathname.startsWith('/webhook/')) {
