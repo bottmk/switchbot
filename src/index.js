@@ -73,6 +73,24 @@ export default {
     const pathname = url.pathname;
 
     try {
+      // Access control: everything except the login endpoints and the SwitchBot
+      // webhook requires a valid session. Unauthed GETs get the login form so a
+      // browser can sign in; other methods get 401. (SwitchBot posts to
+      // /webhook/ with no cookie, so it must stay public.)
+      const isPublic =
+        pathname === '/login' ||
+        pathname === '/logout' ||
+        pathname.startsWith('/webhook/');
+      if (!isPublic && !(await isAuthed(env, request))) {
+        if (request.method === 'GET') {
+          return new Response(loginHtml(), {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+          });
+        }
+        return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
+      }
+
       if (request.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
         if (!(await isAuthed(env, request))) {
           return new Response(loginHtml(), {
