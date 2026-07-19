@@ -2,6 +2,14 @@ name: "04: Deploy Worker"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/switchbot-continuation-90uc17]
+    paths:
+      - 'src/**'
+      - 'wrangler.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/04-deploy.yml'
   workflow_run:
     workflows: ["01: Diagnose"]
     types: [completed]
@@ -13,7 +21,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
