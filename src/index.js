@@ -1,6 +1,8 @@
 import {
   fetchDeviceList,
   fetchAllDevices,
+  fetchRawStatus,
+  sendDeviceCommand,
   fetchDeviceStatus,
   lookupDeviceName,
   calcAbsoluteHumidity,
@@ -72,6 +74,17 @@ export default {
         });
       }
 
+      if (request.method === 'GET' && pathname === '/devices/status') {
+        const id = url.searchParams.get('id');
+        if (!id) return jsonResponse({ ok: false, error: 'missing ?id=<deviceId>' }, 400);
+        const status = await fetchRawStatus(env, id);
+        return jsonResponse({ ok: true, deviceId: id, status }, 200);
+      }
+
+      if (pathname === '/control' && (request.method === 'GET' || request.method === 'POST')) {
+        return await handleControl(env, request, url);
+      }
+
       if (request.method === 'POST' && pathname.startsWith('/webhook/')) {
         return await handleWebhook(env, request);
       }
@@ -86,6 +99,45 @@ export default {
     }
   },
 };
+
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj, null, 2), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' },
+  });
+}
+
+/**
+ * Manual device control (Step 2 "walk"). Fail-safe: if CONTROL_SECRET is not
+ * configured the endpoint is fully disabled (403), so a public deploy never
+ * actuates hardware until the operator opts in by setting the secret. When
+ * enabled, every request must carry the matching `key`.
+ *
+ * GET  /control?id=<deviceId>&cmd=turnOn&key=<secret>
+ * POST /control  {"deviceId","command","parameter","commandType","key"}
+ */
+async function handleControl(env, request, url) {
+  if (!env.CONTROL_SECRET) {
+    return jsonResponse({ ok: false, error: 'control disabled: CONTROL_SECRET is not set' }, 403);
+  }
+  const q = url.searchParams;
+  let body = {};
+  if (request.method === 'POST') {
+    body = await request.json().catch(() => ({}));
+  }
+  const key = body.key ?? q.get('key');
+  if (key !== env.CONTROL_SECRET) {
+    return jsonResponse({ ok: false, error: 'forbidden: bad or missing key' }, 403);
+  }
+  const deviceId = body.deviceId ?? q.get('id');
+  const command = body.command ?? q.get('cmd') ?? 'turnOn';
+  const parameter = body.parameter ?? q.get('parameter') ?? 'default';
+  const commandType = body.commandType ?? q.get('commandType') ?? 'command';
+  if (!deviceId) return jsonResponse({ ok: false, error: 'missing deviceId (id)' }, 400);
+
+  const result = await sendDeviceCommand(env, deviceId, { command, parameter, commandType });
+  return jsonResponse({ ok: true, deviceId, command, parameter, result }, 200);
+}
 
 async function handleData(env, url) {
   const hours = Math.min(Math.max(parseInt(url.searchParams.get('hours') || '24', 10), 1), 24 * 30);
