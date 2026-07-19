@@ -32,19 +32,6 @@ jobs:
 
       - run: npm install --no-audit --no-fund
 
-      - name: Sync CONTROL_SECRET (enables /control; skipped if unset)
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          VAL: ${{ secrets.CONTROL_SECRET }}
-        run: |
-          if [ -n "$VAL" ]; then
-            printf '%s' "$VAL" | npx wrangler secret put CONTROL_SECRET
-            echo "CONTROL_SECRET synced to Worker (control enabled)."
-          else
-            echo "CONTROL_SECRET not set in repo secrets; skipping (control stays disabled)."
-          fi
-
       - name: Sync DASHBOARD_PASSWORD (enables login gate; skipped if unset)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

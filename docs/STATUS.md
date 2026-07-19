@@ -17,8 +17,8 @@
 - **Push to `turso` (or `continuation`) auto-deploys** via `04-deploy.yml` (push
   trigger on `src/**`, `wrangler.toml`, `package.json`, `04-deploy.yml`). Also fires on
   `01: Diagnose` success. Manual `gh workflow run 04-deploy.yml` still works.
-- `04-deploy.yml` **syncs secrets into the Worker on every deploy** (guarded — skipped
-  if the repo secret is unset): `CONTROL_SECRET` and `DASHBOARD_PASSWORD`.
+- `04-deploy.yml` **syncs `DASHBOARD_PASSWORD` into the Worker on every deploy**
+  (guarded — skipped if the repo secret is unset), so the login gate is always provisioned.
 - Cloudflare API token was rotated on 2026-07-19 (token name `gentle-limit-96c2`) after
   the previous one expired; stored as GitHub secret `CLOUDFLARE_API_TOKEN`.
 - D1 database (`switchbot-logs`, id `0688f834-…`) schema initialized and populated.
@@ -33,8 +33,8 @@
 | `/settings` | fan-automation config UI | login |
 | `/devices/all` | full device inventory (incl. circulator, IR remotes) | login |
 | `/devices/status?id=` | raw `/status` for any device | login |
-| `/config` GET / POST | read / save fan config | GET: login · POST: login + `CONTROL_SECRET` |
-| `/control` | manual device command | login + `CONTROL_SECRET` |
+| `/config` GET / POST | read / save fan config | login |
+| `/control` | manual device command | login |
 | `/login`, `/logout` | session cookie | public |
 | `/webhook/…` | SwitchBot ingest | public (must stay open) |
 
@@ -42,10 +42,11 @@
 
 - **Login gate** (`src/auth.js`): shared `DASHBOARD_PASSWORD`, 30-day signed-cookie
   session. A single guard at the top of `fetch()` requires a session for every route
-  except `/login`, `/logout`, `/webhook/*`.
-- **Control key** (`CONTROL_SECRET`): required in addition to login for anything that
-  actuates hardware or writes config (`/control`, POST `/config`). Fail-safe: if
-  `CONTROL_SECRET` is unset the control/save paths return 403.
+  except `/login`, `/logout`, `/webhook/*`. **The login session is the single gate** —
+  a logged-in operator can view, control, and save config with no extra key.
+- `CONTROL_SECRET` was retired: once the whole site sat behind login it was redundant
+  (double auth), so `/control` and `POST /config` are now authorized by the session
+  alone. Automation actuates via the internal `sendDeviceCommand` (no HTTP key).
 
 ## Devices
 

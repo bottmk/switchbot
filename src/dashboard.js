@@ -42,6 +42,7 @@ export const DASHBOARD_HTML = `<!doctype html>
       </select>
     </label>
     <button id="reload">今すぐ更新</button>
+    <a href="/settings" style="font-size:.85rem;opacity:.7">⚙ 設定</a>
     <a href="/logout" style="font-size:.85rem;opacity:.7">ログアウト</a>
   </header>
 

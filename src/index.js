@@ -176,26 +176,20 @@ function jsonResponse(obj, status = 200) {
 }
 
 /**
- * Manual device control (Step 2 "walk"). Fail-safe: if CONTROL_SECRET is not
- * configured the endpoint is fully disabled (403), so a public deploy never
- * actuates hardware until the operator opts in by setting the secret. When
- * enabled, every request must carry the matching `key`.
+ * Manual device control. Gated by the login session (the guard in fetch()),
+ * so a logged-in operator does not need any extra key.
  *
- * GET  /control?id=<deviceId>&cmd=turnOn&key=<secret>
- * POST /control  {"deviceId","command","parameter","commandType","key"}
+ * GET  /control?id=<deviceId>&cmd=turnOn
+ * POST /control  {"deviceId","command","parameter","commandType"}
  */
 async function handleControl(env, request, url) {
-  if (!env.CONTROL_SECRET) {
-    return jsonResponse({ ok: false, error: 'control disabled: CONTROL_SECRET is not set' }, 403);
-  }
+  // Authorization is handled by the login guard in fetch(): any request that
+  // reaches here already has a valid session, so no separate control key is
+  // required.
   const q = url.searchParams;
   let body = {};
   if (request.method === 'POST') {
     body = await request.json().catch(() => ({}));
-  }
-  const key = body.key ?? q.get('key');
-  if (key !== env.CONTROL_SECRET) {
-    return jsonResponse({ ok: false, error: 'forbidden: bad or missing key' }, 403);
   }
   const deviceId = body.deviceId ?? q.get('id');
   const command = body.command ?? q.get('cmd') ?? 'turnOn';
@@ -207,15 +201,10 @@ async function handleControl(env, request, url) {
   return jsonResponse({ ok: true, deviceId, command, parameter, result }, 200);
 }
 
-/** Saves fan-automation config from the /settings UI. Requires CONTROL_SECRET. */
+/** Saves fan-automation config from the /settings UI. Gated by the login session. */
 async function handleConfigWrite(env, request) {
-  if (!env.CONTROL_SECRET) {
-    return jsonResponse({ ok: false, error: 'control disabled: CONTROL_SECRET is not set' }, 403);
-  }
+  // Authorized by the login guard in fetch(); no separate control key required.
   const body = await request.json().catch(() => ({}));
-  if ((body.key ?? '') !== env.CONTROL_SECRET) {
-    return jsonResponse({ ok: false, error: 'forbidden: bad or missing key' }, 403);
-  }
   const config = validateFanConfig(body);
   await saveFanConfig(env.DB, config, jstTimestamp());
   return jsonResponse({ ok: true, config }, 200);

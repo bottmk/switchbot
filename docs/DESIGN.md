@@ -102,9 +102,8 @@ control is the actuation side. Built in three safe stages ("crawl-walk-run"):
    circulator's `deviceId` / `deviceType` / `enableCloudService` without the
    meter-only filter that `fetchDeviceList` applies for the poll.
 2. **Manual control** — `sendDeviceCommand` (signed POST `/commands`, generic) behind
-   `GET|POST /control`. **Fail-safe**: disabled (403) unless `CONTROL_SECRET` is set,
-   and every request must carry the matching key. Deploying the code never actuates
-   hardware until the operator opts in.
+   `GET|POST /control`, authorized by the login session. (An earlier `CONTROL_SECRET`
+   key was dropped once the whole site sat behind login — see "Access control".)
 3. **Automation** — the cron evaluates `decideFanAction(config, temp, jstHour)` and
    actuates. `Battery Circulator Fan 2 Pro` commands confirmed in use: `turnOn` /
    `turnOff`; also `setWindMode` (`direct`/`natural`/`sleep`/`baby`) and `setWindSpeed`
@@ -124,7 +123,7 @@ Fan-automation settings live in a tiny key/value table the Worker creates on dem
 (`CREATE TABLE IF NOT EXISTS`), **not** in `wrangler.toml` vars. Rationale: the operator
 edits thresholds from the `/settings` UI and they must take effect **without a redeploy**
 and **survive deploys**. `enabled` defaults to `false` (fail-safe). Writes go through
-`POST /config`, gated by `CONTROL_SECRET`.
+`POST /config`, authorized by the login session.
 
 ## Access control (`src/auth.js` + central guard)
 
@@ -132,17 +131,19 @@ and **survive deploys**. `enabled` defaults to `false` (fail-safe). Writes go th
 stateless 30-day signed-cookie session (HMAC over an expiry, keyed by the password — no
 D1 session store). A single guard at the top of `fetch()` requires a session for **every**
 route except `/login`, `/logout`, and `/webhook/*` (the webhook must stay open — SwitchBot
-posts to it with no cookie). Hardware/config writes require `CONTROL_SECRET` **in addition**
-to login (defence in depth).
+posts to it with no cookie). **The login session is the single gate**: a logged-in operator
+can view, control (`/control`), and save config (`POST /config`) with no extra key. An
+earlier `CONTROL_SECRET` second factor was removed as redundant once every page required
+login (it was pure friction — the UI had to re-enter it on each save/command).
 
 ## Deploy automation & secret sync (`04-deploy.yml`)
 
 Deploys are push-triggered on the working branch (paths: `src/**`, `wrangler.toml`,
 `package.json`, `04-deploy.yml`) plus `01: Diagnose` success — so `git push` reaches
-production with no manual dispatch. The workflow also **syncs `CONTROL_SECRET` and
-`DASHBOARD_PASSWORD`** into the Worker on each deploy via guarded `wrangler secret put`
-(skipped when the repo secret is unset), so the secrets are always provisioned from one
-place. `04-deploy` does not comment on PRs, so it is outside the loop-guard concern.
+production with no manual dispatch. The workflow also **syncs `DASHBOARD_PASSWORD`** into
+the Worker on each deploy via a guarded `wrangler secret put` (skipped when the repo secret
+is unset), so the login gate is always provisioned. `04-deploy` does not comment on PRs, so
+it is outside the loop-guard concern.
 
 ## Branch consolidation
 

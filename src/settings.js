@@ -1,6 +1,6 @@
 // Self-contained settings UI served at GET /settings. Reads /devices/all and
-// /config to prefill, writes via POST /config (which requires CONTROL_SECRET).
-// The control key is entered here and reused for saving and manual control.
+// /config to prefill, writes via POST /config. Authorization is the login
+// session (the guard in fetch()), so no control key is entered here.
 // No backticks / ${} inside the inline script — this whole file is a template
 // literal, so the script uses string concatenation instead.
 export const SETTINGS_HTML = `<!doctype html>
@@ -37,11 +37,7 @@ export const SETTINGS_HTML = `<!doctype html>
 </head>
 <body>
 <h1>🌀 サーキュレーター自動運転 設定</h1>
-<p class="hint">温度しきい値で寝室のサーキュレーターを自動 ON/OFF します。変更の保存には制御キー（CONTROL_SECRET）が必要です。<a href="/">← ダッシュボードへ</a></p>
-
-<label for="key">制御キー（CONTROL_SECRET）</label>
-<input id="key" type="password" placeholder="保存・手動操作に必要" autocomplete="off">
-<div class="hint">この端末に保存されません。保存/手動操作のたびに使われます。</div>
+<p class="hint">温度しきい値で寝室のサーキュレーターを自動 ON/OFF します。ログイン済みなら、そのまま保存・操作できます。<a href="/">← ダッシュボードへ</a></p>
 
 <h2>自動運転ルール</h2>
 <div class="toggle"><input id="enabled" type="checkbox"><label for="enabled" style="margin:0">自動運転を有効にする</label></div>
@@ -125,7 +121,6 @@ export const SETTINGS_HTML = `<!doctype html>
 
   el('save').onclick = function () {
     var body = {
-      key: el('key').value,
       enabled: el('enabled').checked,
       sensorDeviceId: el('sensor').value,
       fanDeviceId: el('fan').value,
@@ -149,8 +144,7 @@ export const SETTINGS_HTML = `<!doctype html>
 
   function manual(cmd) {
     var id = el('fan').value;
-    var key = el('key').value;
-    var url = '/control?id=' + encodeURIComponent(id) + '&cmd=' + cmd + '&key=' + encodeURIComponent(key);
+    var url = '/control?id=' + encodeURIComponent(id) + '&cmd=' + cmd;
     fetch(url).then(function (r) { return r.json().then(function (j) { return { s: r.status, j: j }; }); })
       .then(function (res) {
         if (res.s === 200 && res.j.ok) { msg(cmd + ' を送信しました。', true); setTimeout(refresh, 1500); }
