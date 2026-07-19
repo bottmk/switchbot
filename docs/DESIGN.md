@@ -78,10 +78,76 @@ Frontend (HTML + chart code) is inlined as a string in `src/index.js`.
 
 ## File layout
 
-- `src/index.js` — Worker (routes, webhook, cron, /data, inline HTML dashboard).
+- `src/index.js` — Worker (routes, access-control guard, webhook, cron, automation).
+- `src/switchbot.js` — SwitchBot API: signing, status/list reads, `fetchAllDevices`,
+  `fetchRawStatus`, `sendDeviceCommand`.
+- `src/auth.js` — dashboard login (shared password + signed session cookie).
+- `src/config.js` — D1-backed app config + `decideFanAction` (pure rule).
+- `src/settings.js` — `/settings` UI (HTML string).
+- `src/dashboard.js` — dashboard UI (HTML string).
+- `src/d1.js` / `src/devices.js` — D1 batch insert / device helpers.
 - `scripts/import-csv.mjs` — one-shot CSV → D1 importer (run by workflow 08).
 - `scripts/backfill-rooms.mjs` — UPDATE script for historical rows (workflow 09).
 - `data/historical/` — CSV history files + `_mapping.json` (file → device_id, room).
 - `docs/db_setup.sql` — schema (applied by workflow 02).
 - `wrangler.toml` — Cloudflare config; `database_id` is patched in by workflow 02
   if it still contains `REPLACE_WITH_ACTUAL_ID`.
+
+## Home automation: sense → decide → act
+
+The goal is home automation; the temperature history is the sensing side and SwitchBot
+control is the actuation side. Built in three safe stages ("crawl-walk-run"):
+
+1. **Discover** — `fetchAllDevices` + `GET /devices/all` (read-only) to find the
+   circulator's `deviceId` / `deviceType` / `enableCloudService` without the
+   meter-only filter that `fetchDeviceList` applies for the poll.
+2. **Manual control** — `sendDeviceCommand` (signed POST `/commands`, generic) behind
+   `GET|POST /control`. **Fail-safe**: disabled (403) unless `CONTROL_SECRET` is set,
+   and every request must carry the matching key. Deploying the code never actuates
+   hardware until the operator opts in.
+3. **Automation** — the cron evaluates `decideFanAction(config, temp, jstHour)` and
+   actuates. `Battery Circulator Fan 2 Pro` commands confirmed in use: `turnOn` /
+   `turnOff`; also `setWindMode` (`direct`/`natural`/`sleep`/`baby`) and `setWindSpeed`
+   (1–100).
+
+**Rule safety** (`decideFanAction`, a pure function so it is unit-tested):
+- **Hysteresis** — ON at `≥ onC`, OFF at `≤ offC`, no change in between; `validateFanConfig`
+  forces `offC < onC` so it can never oscillate.
+- **Night policy** — window 23:00–07:00 JST; `off` = no automation at night, `no-on` =
+  never turn ON at night (still allowed to turn OFF), `allday` = unrestricted.
+- **Idempotent actuation** — `runFanAutomation` reads the fan's actual `power` before
+  sending, so it never repeats a command and respects manual changes within the band.
+
+## Config persistence (`src/config.js`, D1 `app_config`)
+
+Fan-automation settings live in a tiny key/value table the Worker creates on demand
+(`CREATE TABLE IF NOT EXISTS`), **not** in `wrangler.toml` vars. Rationale: the operator
+edits thresholds from the `/settings` UI and they must take effect **without a redeploy**
+and **survive deploys**. `enabled` defaults to `false` (fail-safe). Writes go through
+`POST /config`, gated by `CONTROL_SECRET`.
+
+## Access control (`src/auth.js` + central guard)
+
+`/` and `/data` were public. Access is now a shared **`DASHBOARD_PASSWORD`** login with a
+stateless 30-day signed-cookie session (HMAC over an expiry, keyed by the password — no
+D1 session store). A single guard at the top of `fetch()` requires a session for **every**
+route except `/login`, `/logout`, and `/webhook/*` (the webhook must stay open — SwitchBot
+posts to it with no cookie). Hardware/config writes require `CONTROL_SECRET` **in addition**
+to login (defence in depth).
+
+## Deploy automation & secret sync (`04-deploy.yml`)
+
+Deploys are push-triggered on the working branch (paths: `src/**`, `wrangler.toml`,
+`package.json`, `04-deploy.yml`) plus `01: Diagnose` success — so `git push` reaches
+production with no manual dispatch. The workflow also **syncs `CONTROL_SECRET` and
+`DASHBOARD_PASSWORD`** into the Worker on each deploy via guarded `wrangler secret put`
+(skipped when the repo secret is unset), so the secrets are always provisioned from one
+place. `04-deploy` does not comment on PRs, so it is outside the loop-guard concern.
+
+## Branch consolidation
+
+Two sessions worked in parallel (fan automation on `continuation-90uc17`, password auth
+on `turso-setup-nk30n`). Because every change was additive, `continuation` merged cleanly
+into `turso` (`bb31d7c`). **`turso-setup-nk30n` is now the single canonical branch**;
+`continuation` is retired. Multiple sessions on one branch must `git pull --ff-only`
+before pushing.
