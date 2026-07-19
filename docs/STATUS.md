@@ -4,9 +4,23 @@
 
 ## Branch & PR
 
-- Working branch: `claude/switchbot-turso-setup-nk30n`
+- 現セッション作業ブランチ: `claude/setup-dev-environment-dBa8b`
+- コードベース主ブランチ: `claude/switchbot-turso-setup-nk30n`
 - Open PR: bottmk/switchbot#5 (against main)
-- Latest commit on branch: **`8e2f89e`** — `Add repo .claude/settings.json to enable Agent Teams in fresh sessions`
+- 現セッション最新 commit: **`161b8ee`** — `docs(STATUS): update handoff snapshot to 2026-07-19`
+- コードベース最新 commit: **`8e2f89e`** — `Add repo .claude/settings.json to enable Agent Teams in fresh sessions`
+
+### ブランチ関係
+
+```
+main
+ └─ claude/switchbot-turso-setup-nk30n  ← コード・workflow 全ての実体
+     └─ claude/setup-dev-environment-dBa8b  ← このセッション固有(docs 更新のみ)
+```
+
+新セッションは `claude/switchbot-turso-setup-nk30n` を checkout して開発するのが適切。
+`claude/setup-dev-environment-dBa8b` の STATUS.md 更新を先に merge するか、
+新セッションで同内容を `claude/switchbot-turso-setup-nk30n` に直接 commit しても良い。
 
 ## Deployment status
 
