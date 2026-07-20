@@ -17,8 +17,10 @@
 | SwitchBot ローカル Bluetooth（`switchbot`） | ❌ 未対応 | Circulator / Standing Fan は未サポート（`home-assistant/core#172800`） |
 | Matter | ✅ 対応 | Matter 対応 SwitchBot Hub が同一ネットワークに必要 |
 
-→ HA に出てこない場合は、たいてい**ローカル Bluetooth 連携**を使っているため。
-**SwitchBot Cloud 連携**を追加すれば fan エンティティとして現れる。
+→ 注意: **今回の環境では Cloud 連携を入れてもサーキュレーターは fan として出なかった**
+（開発者ツールの fan リストに `Battery Circulator Fan 2 Pro` が無い ＝ HA の当該バージョンが
+この機種の device type を未マッピング）。温湿度計（Meter）は Cloud 連携で出るが、ファンだけ
+未対応。上流対応は別途進行中で、**直近は下記「Worker 橋渡し」で対応する**。
 
 参考:
 - https://www.home-assistant.io/integrations/switchbot_cloud
@@ -107,8 +109,70 @@ HA の SwitchBot Cloud 連携と、本 Worker の温度自動運転（`/settings
 温度の記録・可視化（ダッシュボード）と HA 表示は競合しないので併用してよい。競合するのは
 「ファンを能動的に制御する自動化」だけ。
 
-## rest_command 方式（採用しないが、参考）
+## Worker 橋渡し（直近対応・採用）
 
-Worker を制御の司令塔に一本化したい場合は、HA から Worker の `/control` を叩く案もある。
-ただし現状 `/control` はログイン（クッキー）認証なので、機械（HA）から呼ぶには
-API トークン認証パスの追加が必要になる。今回は公式 Cloud 連携を採るため見送り。
+HA の現行バージョンは `Battery Circulator Fan 2 Pro` を fan として公開しない（上記）。
+上流対応が入るまでの直近策として、**既にこのサーキュレーターを制御できているこの Worker を
+HA から叩く**。HA 側は SwitchBot 署名を気にしなくてよい（Worker が署名を代行）。
+
+`/control` は「ログインセッション（人間のブラウザ）」または「機械トークン（HA）」で認可される。
+人間の操作感は不変（ログイン済みならキー不要）。HA は機械トークンで叩く。
+
+### 1. Worker に機械トークンを設定（1回だけ）
+
+```
+gh secret set WORKER_API_TOKEN --repo bottmk/switchbot
+```
+
+値は任意のランダム文字列。次回デプロイで Worker に自動同期される（`04-deploy.yml`）。
+これは HA 用の機械トークンで、ブラウザのログイン（`DASHBOARD_PASSWORD`）とは別物。
+`WORKER_API_TOKEN` 未設定なら `/control` はログインのみ受け付ける（フェイルセーフ）。
+
+### 2. HA に rest_command を追加（`configuration.yaml`）
+
+トークンは URL ではなく `X-Api-Key` ヘッダーで送る（ログ露出を避ける）。
+
+```yaml
+rest_command:
+  circulator_on:
+    url: "https://switchbot-temperature-logger.bottmk.workers.dev/control?id=B0E9FEF98348&cmd=turnOn"
+    method: GET
+    headers:
+      X-Api-Key: !secret worker_api_token   # secrets.yaml に  worker_api_token: <設定した値>
+  circulator_off:
+    url: "https://switchbot-temperature-logger.bottmk.workers.dev/control?id=B0E9FEF98348&cmd=turnOff"
+    method: GET
+    headers:
+      X-Api-Key: !secret worker_api_token
+```
+
+風量・モードも同じ形で送れる（SwitchBot のコマンドをそのまま指定）:
+
+```yaml
+  circulator_mode_natural:
+    url: "https://switchbot-temperature-logger.bottmk.workers.dev/control?id=B0E9FEF98348&cmd=setWindMode&parameter=natural"
+    method: GET
+    headers: { X-Api-Key: !secret worker_api_token }
+  circulator_speed_60:
+    url: "https://switchbot-temperature-logger.bottmk.workers.dev/control?id=B0E9FEF98348&cmd=setWindSpeed&parameter=60"
+    method: GET
+    headers: { X-Api-Key: !secret worker_api_token }
+```
+
+### 3. オートメーションは rest_command を呼ぶ
+
+上の「HA オートメーション雛形」の `action:` を、fan サービスの代わりに rest_command にする:
+
+```yaml
+  action:
+    - service: rest_command.circulator_on    # OFF 側は rest_command.circulator_off
+```
+
+トリガー（温度）は Cloud 連携で出ている**温湿度計エンティティをそのまま使える**
+（温湿度計は HA に出る。ファンだけが橋渡し対象）。
+
+### 上流対応が入ったら
+
+HA が `Battery Circulator Fan 2 Pro` を fan として公開したら、rest_command をやめて
+ネイティブ fan エンティティ（`fan.turn_on` 等）に切り替えればよい。競合注意は同じ
+（HA と Worker `/settings` の二重制御は避ける）。

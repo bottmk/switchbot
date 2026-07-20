@@ -45,6 +45,19 @@ jobs:
             echo "DASHBOARD_PASSWORD not set in repo secrets; skipping."
           fi
 
+      - name: Sync WORKER_API_TOKEN (enables machine /control, e.g. HA; skipped if unset)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VAL: ${{ secrets.WORKER_API_TOKEN }}
+        run: |
+          if [ -n "$VAL" ]; then
+            printf '%s' "$VAL" | npx wrangler secret put WORKER_API_TOKEN
+            echo "WORKER_API_TOKEN synced to Worker (token /control enabled)."
+          else
+            echo "WORKER_API_TOKEN not set in repo secrets; skipping (login-only /control)."
+          fi
+
       - name: Deploy Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

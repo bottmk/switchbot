@@ -80,7 +80,8 @@ export default {
       const isPublic =
         pathname === '/login' ||
         pathname === '/logout' ||
-        pathname.startsWith('/webhook/');
+        pathname.startsWith('/webhook/') ||
+        pathname === '/control'; // self-authorizes (login session OR API token)
       if (!isPublic && !(await isAuthed(env, request))) {
         if (request.method === 'GET') {
           return new Response(loginHtml(), {
@@ -176,16 +177,23 @@ function jsonResponse(obj, status = 200) {
 }
 
 /**
- * Manual device control. Gated by the login session (the guard in fetch()),
- * so a logged-in operator does not need any extra key.
+ * Manual device control. Authorized by EITHER a valid login session (browser,
+ * no extra key) OR a machine API token via the `X-Api-Key` header / `?token=`
+ * (for Home Assistant etc.). `/control` is exempt from the login guard so token
+ * clients without a cookie can reach here; auth is enforced below. If
+ * WORKER_API_TOKEN is unset, only the login session is accepted (fail-safe).
  *
- * GET  /control?id=<deviceId>&cmd=turnOn
+ * GET  /control?id=<deviceId>&cmd=turnOn        (header: X-Api-Key: <token>)
  * POST /control  {"deviceId","command","parameter","commandType"}
  */
 async function handleControl(env, request, url) {
-  // Authorization is handled by the login guard in fetch(): any request that
-  // reaches here already has a valid session, so no separate control key is
-  // required.
+  const token = request.headers.get('X-Api-Key') || url.searchParams.get('token');
+  const authorized =
+    (await isAuthed(env, request)) ||
+    (!!env.WORKER_API_TOKEN && token === env.WORKER_API_TOKEN);
+  if (!authorized) {
+    return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
+  }
   const q = url.searchParams;
   let body = {};
   if (request.method === 'POST') {
