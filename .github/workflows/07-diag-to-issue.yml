@@ -6,13 +6,137 @@ name: "07: Diag → Issue"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/switchbot-turso-setup-nk30n]
+    paths:
+      - 'src/**'
+      - 'docs/db_setup.sql'
+      - 'wrangler.toml'
+      - '.github/workflows/07-diag-to-issue.yml'
+      - 'scripts/**'
+
+concurrency:
+  group: diag-issue-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
   issues: write
+  pull-requests: write
+  actions: read
 
 jobs:
+  loop-guard:
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+      recent: ${{ steps.check.outputs.recent }}
+      s1_files: ${{ steps.check.outputs.s1_files }}
+      s1_net: ${{ steps.check.outputs.s1_net }}
+      s2_dup: ${{ steps.check.outputs.s2_dup }}
+      s3_fail: ${{ steps.check.outputs.s3_fail }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 15
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "Manual trigger — bypassing loop guard."
+            echo "go=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          AUTHORS=$(git log -10 --format='%ae')
+          CLAUDE=$(echo "$AUTHORS" | grep -c 'noreply@anthropic.com' || true)
+          echo "Recent authors:"
+          echo "$AUTHORS"
+          echo "Claude consecutive: $CLAUDE"
+          RECENT=$(git log -10 --format='- %h %ae: %s')
+          {
+            echo "recent<<EOF"
+            echo "$RECENT"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+          # Author count is already computed as $CLAUDE
+          # S1: file-set churn over last 8 Claude commits
+          N=8
+          S1_FILES=$(git log -n $N --author='noreply@anthropic.com' --no-merges --name-only --pretty=format: | sed '/^$/d' | sort -u | wc -l)
+          S1_COMMITS=$(git log -n $N --author='noreply@anthropic.com' --no-merges --oneline | wc -l)
+          S1_NET=$(git log -n $N --author='noreply@anthropic.com' --no-merges --shortstat --pretty=format: | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
+          echo "S1: files=$S1_FILES commits=$S1_COMMITS net=$S1_NET"
+          echo "s1_files=$S1_FILES" >> $GITHUB_OUTPUT
+          echo "s1_net=$S1_NET" >> $GITHUB_OUTPUT
+          THRASH=0
+          if [ "$S1_COMMITS" -ge 8 ] && [ "$S1_FILES" -le 3 ] && [ "$S1_NET" -lt 20 ]; then THRASH=1; fi
+
+          # S2: commit message duplication over last 6 Claude commits
+          N2=6
+          S2_DUP=$(git log -n $N2 --author='noreply@anthropic.com' --no-merges --format='%s' \
+            | sed -E 's/[0-9a-f]{7,}//g; s/[[:space:]]+/ /g' | tr 'A-Z' 'a-z' \
+            | sort | uniq -c | sort -rn | awk 'NR==1{print $1+0}')
+          DUPMSG=0
+          if [ "${S2_DUP:-0}" -ge 4 ]; then DUPMSG=1; fi
+          echo "S2: dup_count=$S2_DUP"
+          echo "s2_dup=$S2_DUP" >> $GITHUB_OUTPUT
+
+          # S3: CI failure streak — same workflow failing repeatedly on this branch
+          S3=0
+          FAIL=0
+          if command -v gh >/dev/null 2>&1 && [ -n "$GH_TOKEN" ]; then
+            FAIL=$(gh run list --workflow="$GITHUB_WORKFLOW" --branch="$GITHUB_REF_NAME" \
+              --limit 6 --json conclusion -q '[.[] | select(.conclusion=="failure")] | length' 2>/dev/null || echo 0)
+            if [ "${FAIL:-0}" -ge 5 ]; then S3=1; fi
+            echo "S3: failures_in_6=$FAIL"
+          else
+            echo "S3: skipped (gh or token unavailable)"
+          fi
+          echo "s3_fail=$FAIL" >> $GITHUB_OUTPUT
+
+          # Author count ($CLAUDE) is kept in output for visibility only — no longer a gate.
+          if { [ "$THRASH" -eq 1 ] && [ "$DUPMSG" -eq 1 ]; } || [ "$S3" -eq 1 ]; then
+            echo "::warning::Loop guard tripped: (S1 thrash AND S2 msg-dup) OR S3 CI failure streak."
+            echo "go=false" >> $GITHUB_OUTPUT
+            if [ "$S3" -eq 1 ]; then
+              echo "halt_reason=ci_failure_streak" >> $GITHUB_OUTPUT
+            else
+              echo "halt_reason=thrash+dup" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "go=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Comment on tracker PR (halted)
+        if: steps.check.outputs.go == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const branch = context.ref.replace('refs/heads/', '');
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', head: `${context.repo.owner}:${branch}`, per_page: 1,
+            });
+            if (!prs.data.length) { console.log('No tracker PR'); return; }
+            const body = [
+              `### 🛑 [auto-halted] ${context.workflow} run #${context.runNumber}`,
+              '',
+              `Loop guard tripped: (S1 file-set churn AND S2 commit-message duplication) OR S3 CI failure streak (files=${{ steps.check.outputs.s1_files }}, net=${{ steps.check.outputs.s1_net }} insertions, dup=${{ steps.check.outputs.s2_dup }}, ci_failures_in_6=${{ steps.check.outputs.s3_fail }}).`,
+              '',
+              'Last 10 commits:',
+              '```',
+              `${{ steps.check.outputs.recent }}`,
+              '```',
+              '',
+              'To resume auto-runs on push, commit something as a non-Claude author (e.g. a small README edit).',
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: prs.data[0].number, body,
+            });
+
   diag:
+    needs: loop-guard
+    if: needs.loop-guard.outputs.go == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -159,27 +283,10 @@ jobs:
           print(f"Sanitized: {len(t)} chars")
           PY
 
-      - name: Post log as GitHub Issue
+      - name: Post log to tracker PR (or fallback Issue)
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            let body = '(no log captured)';
-            try { body = fs.readFileSync('/tmp/diag.log', 'utf8'); } catch {}
-            // GitHub issue body limit is 65535 chars; reserve room for code fences.
-            const MAX = 60000;
-            if (body.length > MAX) body = body.slice(0, MAX) + '\n\n... (truncated)';
-            const wrapped = '```\n' + body + '\n```';
-            const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: `[diag] run #${context.runNumber} on ${context.ref.replace('refs/heads/','')}`,
-              body: wrapped,
-            });
-            core.setOutput('issue_url', issue.data.html_url);
-            core.summary
-              .addHeading('Diagnostic Issue Created')
-              .addLink('Open issue', issue.data.html_url)
-              .write();
-            console.log('Issue URL:', issue.data.html_url);
+            const post = require('./scripts/post-tracker.cjs');
+            await post({ github, context, core, logPath: '/tmp/diag.log', kind: 'diag' });

@@ -1,8 +1,7 @@
-/**
- * Parses `env.DEVICES` (a JSON string) into an array of `{deviceId, room}`.
- * @param {Record<string, string>} env
- * @returns {Array<{deviceId:string, room:string}>}
- */
+// Normalize a MAC/deviceId to a comparable form: keep only hex characters,
+// lowercase. Tolerates both "AA:BB:CC:DD:EE:FF" and "AABBCCDDEEFF".
+const normMac = (s) => (s || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+
 export function loadDevices(env) {
   const parsed = JSON.parse(env.DEVICES || '[]');
   if (!Array.isArray(parsed)) throw new Error('Invalid DEVICES env');
@@ -14,16 +13,9 @@ export function loadDevices(env) {
   return parsed;
 }
 
-/**
- * Looks up a device's room by deviceId (case-insensitive — MAC casing varies
- * between SwitchBot API responses and webhook payloads).
- * @param {Array<{deviceId:string, room:string}>} devices
- * @param {string} deviceId
- * @returns {string | undefined}
- */
 export function lookupRoom(devices, deviceId) {
   if (!deviceId) return undefined;
-  const target = deviceId.toLowerCase();
-  const found = devices.find((d) => d.deviceId.toLowerCase() === target);
+  const target = normMac(deviceId);
+  const found = devices.find((d) => normMac(d.deviceId) === target);
   return found ? found.room : undefined;
 }

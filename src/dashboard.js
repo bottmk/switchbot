@@ -13,9 +13,12 @@ export const DASHBOARD_HTML = `<!doctype html>
     h1 { font-size: 1.2rem; margin: 0 1rem 0 0; }
     select, button { font: inherit; padding: .3rem .5rem; }
     .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin: .8rem 0; font-size: .9rem; opacity: .85; }
-    .chart-wrap { position: relative; height: 38vh; min-height: 240px; margin-bottom: 1rem; }
-    @media (max-width: 600px) { .chart-wrap { height: 30vh; } }
+    .chart-wrap { position: relative; height: 38vh; height: 38dvh; min-height: 240px; margin-bottom: 1rem; }
+    @media (max-width: 600px) { .chart-wrap { height: 32vh; height: 32dvh; min-height: 220px; } }
     .err { color: #c33; font-size: .85rem; margin-top: .3rem; }
+    #legend { display: flex; flex-wrap: wrap; gap: 0.8rem; margin: 0.5rem 0 0.8rem; font-size: 0.85rem; }
+    #legend .item { display: inline-flex; align-items: center; gap: 0.3rem; }
+    #legend .swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(127,127,127,0.5); }
   </style>
 </head>
 <body>
@@ -39,10 +42,13 @@ export const DASHBOARD_HTML = `<!doctype html>
       </select>
     </label>
     <button id="reload">今すぐ更新</button>
+    <a href="/settings" style="font-size:.85rem;opacity:.7">⚙ 設定</a>
+    <a href="/logout" style="font-size:.85rem;opacity:.7">ログアウト</a>
   </header>
 
   <div class="stats" id="stats">読み込み中...</div>
   <div class="err" id="err"></div>
+  <div id="legend"></div>
 
   <div class="chart-wrap"><canvas id="temp"></canvas></div>
   <div class="chart-wrap"><canvas id="humid"></canvas></div>
@@ -54,7 +60,7 @@ const colors = ['#4e79a7','#f28e2b','#e15759','#76b7b2','#59a14f','#edc948','#b0
 let temp, humid, ah;
 let refreshTimer = null;
 
-function mkChart(ctx, label, ylabel) {
+function mkChart(ctx, ylabel) {
   return new Chart(ctx, {
     type: 'line',
     data: { datasets: [] },
@@ -64,12 +70,51 @@ function mkChart(ctx, label, ylabel) {
       parsing: false,
       responsive: true,
       plugins: {
-        title: { display: true, text: label },
-        legend: { position: 'bottom' },
+        title: { display: false },
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => {
+              if (!items.length) return '';
+              const d = new Date(items[0].parsed.x);
+              const mo = String(d.getMonth()+1).padStart(2,'0');
+              const da = String(d.getDate()).padStart(2,'0');
+              const hh = String(d.getHours()).padStart(2,'0');
+              const mm = String(d.getMinutes()).padStart(2,'0');
+              return \`\${d.getFullYear()}-\${mo}-\${da} \${hh}:\${mm}\`;
+            },
+          },
+        },
       },
       scales: {
-        x: { type: 'time', time: { tooltipFormat: 'MM-dd HH:mm' } },
-        y: { title: { display: true, text: ylabel } },
+        x: {
+          type: 'time',
+          ticks: {
+            maxRotation: 0,
+            minRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 7,
+            autoSkipPadding: 12,
+            callback: function(value) {
+              const d = new Date(value);
+              const hoursWin = parseInt(document.getElementById('range').value, 10);
+              const mo = String(d.getMonth()+1).padStart(2,'0');
+              const da = String(d.getDate()).padStart(2,'0');
+              const h = String(d.getHours()).padStart(2,'0');
+              const m = String(d.getMinutes()).padStart(2,'0');
+              if (hoursWin <= 24) {
+                return \`\${h}:\${m}\`;
+              } else if (hoursWin <= 72) {
+                return [\`\${mo}/\${da}\`, \`\${h}:\${m}\`];
+              } else {
+                return \`\${mo}/\${da}\`;
+              }
+            },
+          },
+        },
+        y: {
+          title: { display: true, text: ylabel, font: { size: 14, weight: 'bold' } },
+        },
       },
       elements: { point: { radius: 1.5 }, line: { tension: 0.2 } },
     },
@@ -77,50 +122,72 @@ function mkChart(ctx, label, ylabel) {
 }
 
 function init() {
-  temp  = mkChart(document.getElementById('temp'),  '温度 (°C)',      '°C');
-  humid = mkChart(document.getElementById('humid'), '湿度 (%)',       '%');
-  ah    = mkChart(document.getElementById('ah'),    '絶対湿度 (g/m³)', 'g/m³');
+  temp  = mkChart(document.getElementById('temp'),  '温度 (°C)');
+  humid = mkChart(document.getElementById('humid'), '湿度 (%)');
+  ah    = mkChart(document.getElementById('ah'),    '絶対湿度 (g/m³)');
 }
 
 async function load() {
   const hours = document.getElementById('range').value;
   document.getElementById('err').textContent = '';
+  const stats = document.getElementById('stats');
+  stats.textContent = '読み込み中...';
   try {
-    const r = await fetch('/data?hours=' + hours);
+    const r = await fetch('/data?hours=' + hours + '&_=' + Date.now());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
-    apply(j.rows || []);
-    const last = j.rows && j.rows[j.rows.length-1];
+    const all = j.rows || [];
+    // Hide SMOKE:TEST rows entirely (test data, not real measurement)
+    const rows = all.filter(r => !(r.device_id || '').startsWith('SMOKE'));
+    apply(rows);
+    const last = rows[rows.length-1];
     const lastTs = last ? last.timestamp : '(なし)';
-    document.getElementById('stats').textContent =
-      \`行数: \${j.rows.length} / 部屋: \${[...new Set(j.rows.map(r=>r.room))].join(', ') || '(なし)'} / 最終: \${lastTs}\`;
+    const labels = [...new Set(rows.map(labelFor))];
+    stats.textContent =
+      \`期間: \${hours}h / 行数: \${rows.length} / 系列: \${labels.join(', ') || '(なし)'} / 最終: \${lastTs}\`;
   } catch (e) {
+    stats.textContent = '';
     document.getElementById('err').textContent = 'fetch error: ' + e.message;
   }
 }
 
+function labelFor(r) {
+  // Prefer room name; fall back to a short device id if room is missing
+  if (r.room && r.room !== 'unknown') return r.room;
+  const id = r.device_id || 'unknown';
+  return id.length > 8 ? id.slice(-8) : id;
+}
+
 function apply(rows) {
-  // Group rows by room
-  const byRoom = {};
+  // Group rows by display label (room or short device id)
+  const groups = {};
   for (const r of rows) {
-    const room = r.room || 'unknown';
-    if (!byRoom[room]) byRoom[room] = [];
-    byRoom[room].push(r);
+    const k = labelFor(r);
+    if (!groups[k]) groups[k] = [];
+    groups[k].push(r);
   }
-  const datasets = (chartKey, yKey) => {
-    return Object.entries(byRoom).map(([room, list], i) => ({
-      label: room,
+  const datasets = (yKey) =>
+    Object.entries(groups).map(([k, list], i) => ({
+      label: k,
       borderColor: colors[i % colors.length],
       backgroundColor: colors[i % colors.length] + '33',
-      data: list.map(r => ({ x: new Date(r.timestamp.replace(' ', 'T') + '+09:00'), y: r[yKey] })),
+      data: list.map(r => ({ x: new Date(r.timestamp.replace(' ', 'T') + '+09:00').getTime(), y: r[yKey] })),
     }));
-  };
-  temp.data.datasets  = datasets('temp',  'temperature');
-  humid.data.datasets = datasets('humid', 'humidity');
-  ah.data.datasets    = datasets('ah',    'absolute_humidity');
-  temp.update();
-  humid.update();
-  ah.update();
+  const lg = document.getElementById('legend');
+  lg.innerHTML = Object.keys(groups).map((k, i) => {
+    const c = colors[i % colors.length];
+    return \`<span class="item"><span class="swatch" style="background:\${c}33;border-color:\${c}"></span>\${k}</span>\`;
+  }).join('');
+  try {
+    temp.data.datasets  = datasets('temperature');
+    humid.data.datasets = datasets('humidity');
+    ah.data.datasets    = datasets('absolute_humidity');
+    temp.update();
+    humid.update();
+    ah.update();
+  } catch (e) {
+    document.getElementById('err').textContent = 'chart error: ' + e.message;
+  }
 }
 
 function arm() {
@@ -130,8 +197,14 @@ function arm() {
 }
 
 document.getElementById('range').addEventListener('change', load);
-document.getElementById('refresh').addEventListener('change', arm);
-document.getElementById('reload').addEventListener('click', load);
+document.getElementById('refresh').addEventListener('change', () => { arm(); load(); });
+document.getElementById('reload').addEventListener('click', () => {
+  const btn = document.getElementById('reload');
+  const orig = btn.textContent;
+  btn.textContent = '更新中...';
+  btn.disabled = true;
+  load().finally(() => { btn.textContent = orig; btn.disabled = false; });
+});
 
 init();
 load();

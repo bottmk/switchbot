@@ -27,11 +27,13 @@ export async function signRequest(token, secret, t, nonce) {
  * @returns {Promise<{temperature:number, humidity:number, battery:number}>}
  */
 export async function fetchDeviceStatus(env, deviceId) {
+  // SwitchBot API expects MAC without separators, uppercase.
+  const apiId = String(deviceId || '').toUpperCase().replace(/[^0-9A-F]/g, '');
   const t = Date.now().toString();
   const nonce = crypto.randomUUID();
   const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
 
-  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${deviceId}/status`, {
+  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${apiId}/status`, {
     method: 'GET',
     headers: {
       Authorization: env.SWITCHBOT_API_TOKEN,
@@ -68,6 +70,179 @@ export async function fetchDeviceStatus(env, deviceId) {
 export function calcAbsoluteHumidity(t, h) {
   const ah = (217 * (6.1078 * Math.pow(10, (7.5 * t) / (t + 237.3)))) / (t + 273.15) * (h / 100);
   return Math.round(ah * 100) / 100;
+}
+
+// SwitchBot device types that report temperature/humidity.
+const METER_TYPES = new Set(['Meter', 'MeterPlus', 'MeterPro', 'MeterPro(CO2)', 'WoIOSensor', 'WoIOSensorTH', 'Hub 2']);
+
+// Module-scope cache. Survives across requests within the same isolate.
+let _deviceListCache = null;
+let _deviceListCachedAt = 0;
+const DEVICE_LIST_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function normalizeMac(s) {
+  return String(s || '').toUpperCase().replace(/[^0-9A-F]/g, '');
+}
+
+/**
+ * Fetches /v1.1/devices, filters to meter-type devices, caches the result in
+ * module scope. Returns [{ deviceId: 'AABBCCDDEEFF', name: '...', type: '...' }].
+ * On API failure, returns the last good cache if any, else [].
+ */
+export async function fetchDeviceList(env, { force = false } = {}) {
+  const now = Date.now();
+  if (!force && _deviceListCache && now - _deviceListCachedAt < DEVICE_LIST_TTL_MS) {
+    return _deviceListCache;
+  }
+  const t = String(now);
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  let response;
+  try {
+    response = await fetch('https://api.switch-bot.com/v1.1/devices', {
+      headers: {
+        Authorization: env.SWITCHBOT_API_TOKEN,
+        sign, t, nonce,
+        'Content-Type': 'application/json',
+      },
+    });
+  } catch (err) {
+    console.log(`fetchDeviceList network error: ${err}`);
+    return _deviceListCache || [];
+  }
+  if (!response.ok) {
+    console.log(`fetchDeviceList HTTP ${response.status}`);
+    return _deviceListCache || [];
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    console.log(`fetchDeviceList statusCode ${json.statusCode}: ${json.message}`);
+    return _deviceListCache || [];
+  }
+  const list = (json.body?.deviceList || [])
+    .filter((d) => METER_TYPES.has(d.deviceType))
+    .map((d) => ({
+      deviceId: normalizeMac(d.deviceId),
+      name: d.deviceName || normalizeMac(d.deviceId),
+      type: d.deviceType,
+    }));
+  _deviceListCache = list;
+  _deviceListCachedAt = now;
+  return list;
+}
+
+/**
+ * Fetches /v1.1/devices and returns the FULL inventory WITHOUT the meter-type
+ * filter — physical devices and IR remotes alike. Read-only; used by the
+ * /devices/all diagnostic endpoint to discover controllable devices (e.g. a
+ * circulator) and their metadata (deviceType, hubDeviceId, enableCloudService).
+ * Deliberately does NOT read or write the meter-list cache used by
+ * fetchDeviceList(), so the cron polling path is completely unaffected.
+ * @param {Record<string, string>} env
+ * @returns {Promise<{deviceList: Array, infraredRemoteList: Array}>}
+ */
+export async function fetchAllDevices(env) {
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch('https://api.switch-bot.com/v1.1/devices', {
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`SwitchBot API ${response.status}: ${await response.text()}`);
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    throw new Error(`SwitchBot API statusCode ${json.statusCode}: ${json.message}`);
+  }
+  const deviceList = (json.body?.deviceList || []).map((d) => ({
+    deviceId: d.deviceId,
+    deviceName: d.deviceName,
+    deviceType: d.deviceType,
+    hubDeviceId: d.hubDeviceId,
+    enableCloudService: d.enableCloudService,
+  }));
+  const infraredRemoteList = (json.body?.infraredRemoteList || []).map((d) => ({
+    deviceId: d.deviceId,
+    deviceName: d.deviceName,
+    remoteType: d.remoteType,
+    hubDeviceId: d.hubDeviceId,
+  }));
+  return { deviceList, infraredRemoteList };
+}
+
+/**
+ * GETs the full `/status` body for ANY device (not just meters) and returns
+ * the raw `body` object, so callers can inspect device-specific fields such
+ * as a circulator's `mode` / `fanSpeed` / `power`. Read-only.
+ * @param {Record<string, string>} env
+ * @param {string} deviceId
+ * @returns {Promise<Record<string, any>>}
+ */
+export async function fetchRawStatus(env, deviceId) {
+  const apiId = String(deviceId || '').trim();
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${apiId}/status`, {
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`SwitchBot API ${response.status}: ${await response.text()}`);
+  }
+  const json = await response.json();
+  if (json.statusCode !== 100) {
+    throw new Error(`SwitchBot API statusCode ${json.statusCode}: ${json.message}`);
+  }
+  return json.body;
+}
+
+/**
+ * POSTs a command to `/v1.1/devices/{id}/commands` (signed). Generic — the
+ * caller supplies command/parameter/commandType, so it works for any
+ * controllable SwitchBot device. This is a WRITE that actuates hardware.
+ * Returns the parsed API `body`; throws on HTTP or API-level error.
+ * @param {Record<string, string>} env
+ * @param {string} deviceId
+ * @param {{command: string, parameter?: string, commandType?: string}} cmd
+ * @returns {Promise<Record<string, any>>}
+ */
+export async function sendDeviceCommand(env, deviceId, { command, parameter = 'default', commandType = 'command' }) {
+  const apiId = String(deviceId || '').trim();
+  const t = String(Date.now());
+  const nonce = crypto.randomUUID();
+  const sign = await signRequest(env.SWITCHBOT_API_TOKEN, env.SWITCHBOT_API_SECRET, t, nonce);
+  const response = await fetch(`https://api.switch-bot.com/v1.1/devices/${apiId}/commands`, {
+    method: 'POST',
+    headers: {
+      Authorization: env.SWITCHBOT_API_TOKEN,
+      sign, t, nonce,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ command, parameter, commandType }),
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok || json.statusCode !== 100) {
+    throw new Error(`SwitchBot command failed: HTTP ${response.status} statusCode ${json.statusCode} ${json.message || ''}`);
+  }
+  return json.body ?? {};
+}
+
+/** Look up a device's display name from cache; falls back to short id. */
+export function lookupDeviceName(devices, deviceMac) {
+  const target = normalizeMac(deviceMac);
+  if (!target) return 'unknown';
+  const found = (devices || []).find((d) => d.deviceId === target);
+  if (found) return found.name;
+  return target.length > 6 ? target.slice(-6) : target;
 }
 
 /**

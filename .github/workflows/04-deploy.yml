@@ -2,17 +2,25 @@ name: "04: Deploy Worker"
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'wrangler.toml'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/04-deploy.yml'
   workflow_run:
     workflows: ["01: Diagnose"]
     types: [completed]
 
 concurrency:
-  group: deploy-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +33,32 @@ jobs:
           node-version: '22'
 
       - run: npm install --no-audit --no-fund
+
+      - name: Sync DASHBOARD_PASSWORD (enables login gate; skipped if unset)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VAL: ${{ secrets.DASHBOARD_PASSWORD }}
+        run: |
+          if [ -n "$VAL" ]; then
+            printf '%s' "$VAL" | npx wrangler secret put DASHBOARD_PASSWORD
+            echo "DASHBOARD_PASSWORD synced to Worker (login gate active)."
+          else
+            echo "DASHBOARD_PASSWORD not set in repo secrets; skipping."
+          fi
+
+      - name: Sync WORKER_API_TOKEN (enables machine /control, e.g. HA; skipped if unset)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VAL: ${{ secrets.WORKER_API_TOKEN }}
+        run: |
+          if [ -n "$VAL" ]; then
+            printf '%s' "$VAL" | npx wrangler secret put WORKER_API_TOKEN
+            echo "WORKER_API_TOKEN synced to Worker (token /control enabled)."
+          else
+            echo "WORKER_API_TOKEN not set in repo secrets; skipping (login-only /control)."
+          fi
 
       - name: Deploy Worker
         env:
